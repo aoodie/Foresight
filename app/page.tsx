@@ -751,6 +751,19 @@ export default function Home() {
           riskPercent: parsedRiskPercent,
           mode: executionMode,
           confirmLive: liveConfirm,
+          journal: {
+            style: scanMode,
+            strategyName: marketAiPlan?.strategyName ?? marketSetup.selectedStrategy?.name ?? marketSetup.setup,
+            setupType: marketAiPlan?.setupType ?? marketSetup.selectedStrategy?.id ?? null,
+            entryPrice: planEntry,
+            takeProfit2: planTp2,
+            lots: calculatedLots,
+            riskAmount,
+            thesis: marketAiPlan?.analysis ?? marketSetup.analysis,
+            evidence: marketAiPlan?.reasons?.join(" ") ?? marketSetup.reasons.join(" "),
+            invalidation: marketAiPlan?.invalidation ?? marketSetup.invalidation,
+            metadata: { score: marketSetup.score, rsi: marketSetup.rsi, atrPercent: marketSetup.atrPercent, timeframeAlignment: marketSetup.timeframeAlignment },
+          },
         }),
       });
       const payload = await response.json();
@@ -816,6 +829,12 @@ export default function Home() {
           </NavLink>
           <NavLink href="/research" active={isResearch}>
             News & events
+          </NavLink>
+          <NavLink href="/journal" active={false}>
+            Journal
+          </NavLink>
+          <NavLink href="/logs" active={false}>
+            System logs
           </NavLink>
         </nav>
         <div className="flex items-center gap-2">

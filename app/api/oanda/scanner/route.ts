@@ -8,6 +8,7 @@ import {
   type ScannerResult,
   type TimeframeMode,
 } from "@/lib/market-scanner";
+import { writeSystemLog } from "@/lib/trading-records";
 
 const universe = [
   { instrument: "EUR_USD", label: "EUR / USD", assetClass: "forex" as const },
@@ -25,6 +26,7 @@ const universe = [
 ];
 
 export async function GET(request: Request) {
+  const startedAt = Date.now();
   const connection = await getOandaToken();
   if (!connection)
     return NextResponse.json(
@@ -89,6 +91,7 @@ export async function GET(request: Request) {
   }
 
   results.sort((a, b) => b.score - a.score);
+  await writeSystemLog({ category: "scanner", event: "scan.completed", message: `Scanner completed for ${mode}: ${results.length} markets available.`, environment: connection.environment, durationMs: Date.now() - startedAt, details: { mode, resultCount: results.length, unavailableCount: unavailable.length } });
   return NextResponse.json({
     connected: true,
     environment: connection.environment,
