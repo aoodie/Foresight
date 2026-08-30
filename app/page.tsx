@@ -1,17 +1,20 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, CheckCircle2, CircleDot, RefreshCw, ScanSearch, Settings2, Wifi } from "lucide-react";
+import { AlertCircle, BrainCircuit, CalendarDays, CheckCircle2, CircleDot, Newspaper, RefreshCw, ScanSearch, Settings2, ShieldAlert, Sparkles, Wifi } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { TradingViewChart } from "@/components/tradingview-chart";
+import { EconomicCalendar, PairNews } from "@/components/tradingview-context";
 
 type Candle = { time: string; open: number; high: number; low: number; close: number; complete: boolean };
 type MarketData = { candles: Candle[]; price: number; changePercent: number; lastUpdated: string; environment: "practice" | "live" };
 type Quote = { bid: number; ask: number; mid: number; spread: number; time: string; tradeable: boolean; marketStatus: string; environment: "practice" | "live" };
 type ScanResult = { instrument: string; label: string; assetClass: "forex" | "metal" | "index"; bias: "long" | "short" | "neutral"; score: number; price: number; change24h: number; rsi: number; atrPercent: number; rangePosition: number; entry: number | null; stopLoss: number | null; takeProfit1: number | null; takeProfit2: number | null; riskReward1: number | null; riskReward2: number | null; analysis: string; reasons: string[]; invalidation: string; setup: string; updatedAt: string };
 type ScannerData = { generatedAt: string; timeframe: string; results: ScanResult[]; unavailable: Array<{ instrument: string; label: string }> };
+type AiStrategy = { instrument: string; verdict: "long" | "short" | "wait"; strategyName: string; setupType: "breakout" | "pullback" | "reversal" | "range" | "no_trade"; confidence: number; entryType: "limit" | "stop" | "market" | "none"; entry: number | null; stopLoss: number | null; takeProfit1: number | null; takeProfit2: number | null; riskReward1: number | null; riskReward2: number | null; analysis: string; reasons: string[]; trigger: string; invalidation: string; eventRisk: string };
+type AiStrategyData = { model: string; generatedAt: string; strategies: AiStrategy[] };
 type ConnectionState = "checking" | "disconnected" | "configured" | "connected" | "error";
 
 const instruments = [
@@ -69,7 +72,30 @@ export default function Home() {
   const [scanner, setScanner] = useState<ScannerData | null>(null);
   const [scanning, setScanning] = useState(false);
   const [scannerError, setScannerError] = useState("");
+  const [aiKey, setAiKey] = useState("");
+  const [aiConnected, setAiConnected] = useState(false);
+  const [aiSaving, setAiSaving] = useState(false);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState("");
+  const [aiData, setAiData] = useState<AiStrategyData | null>(null);
+  const [aiSourceScan, setAiSourceScan] = useState("");
   const scanRequested = useRef(false);
+
+  const generateAiStrategies = useCallback(async (markets: ScanResult[], sourceScan: string) => {
+    setAiLoading(true);
+    setAiError("");
+    setAiSourceScan(sourceScan);
+    try {
+      const response = await fetch("/api/ai/strategies", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ markets: markets.slice(0, 3) }) });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Unable to generate AI strategies.");
+      setAiData(payload);
+    } catch (error) {
+      setAiError(error instanceof Error ? error.message : "Unable to generate AI strategies.");
+    } finally {
+      setAiLoading(false);
+    }
+  }, []);
 
   const runScanner = useCallback(async () => {
     setScanning(true);
@@ -79,6 +105,8 @@ export default function Home() {
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || payload.message || "Unable to complete the daily scan.");
       setScanner(payload);
+      setAiData(null);
+      setAiSourceScan("");
     } catch (error) {
       setScannerError(error instanceof Error ? error.message : "Unable to complete the daily scan.");
     } finally {
@@ -140,6 +168,14 @@ export default function Home() {
   }, [refreshCandles, refreshQuote]);
 
   useEffect(() => {
+    let active = true;
+    fetch("/api/ai/connection", { cache: "no-store" }).then(async (response) => ({ response, payload: await response.json() })).then(({ response, payload }) => {
+      if (active) setAiConnected(Boolean(response.ok && payload.connected));
+    }).catch(() => { if (active) setAiConnected(false); });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
     if (connection !== "connected" && connection !== "configured") return;
     const timer = window.setInterval(() => { void refreshQuote(true); }, 2000);
     return () => window.clearInterval(timer);
@@ -150,6 +186,12 @@ export default function Home() {
     scanRequested.current = true;
     void runScanner();
   }, [connection, runScanner]);
+
+  useEffect(() => {
+    if (!aiConnected || !scanner?.results.length || aiLoading || aiSourceScan === scanner.generatedAt) return;
+    const timer = window.setTimeout(() => { void generateAiStrategies(scanner.results, scanner.generatedAt); }, 0);
+    return () => window.clearTimeout(timer);
+  }, [aiConnected, aiLoading, aiSourceScan, generateAiStrategies, scanner]);
 
   const saveConnection = async () => {
     setSaving(true);
@@ -175,6 +217,23 @@ export default function Home() {
     }
   };
 
+  const saveAiConnection = async () => {
+    setAiSaving(true);
+    setAiError("");
+    try {
+      const response = await fetch("/api/ai/connection", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ apiKey: aiKey }) });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "OpenAI rejected this API key.");
+      setAiKey("");
+      setAiConnected(true);
+    } catch (error) {
+      setAiConnected(false);
+      setAiError(error instanceof Error ? error.message : "Unable to save this OpenAI API key.");
+    } finally {
+      setAiSaving(false);
+    }
+  };
+
   const recent = data?.candles.slice(-24) ?? [];
   const low = recent.length ? Math.min(...recent.map((c) => c.low)) : null;
   const high = recent.length ? Math.max(...recent.map((c) => c.high)) : null;
@@ -192,20 +251,27 @@ export default function Home() {
         <div className="flex items-center gap-3"><span className="grid h-9 w-9 place-items-center rounded-lg bg-[#a4ffcf] text-[#07100f]"><CircleDot size={19}/></span><div><p className="text-sm font-semibold tracking-[.18em]">FORESIGHT FX</p><p className="text-[10px] tracking-[.2em] text-[#8aa29a]">RESEARCH TERMINAL</p></div></div>
         <div className="flex items-center gap-2">
           <span className={(connection === "connected" ? "border-[#59dfa9]/30 bg-[#59dfa9]/10 text-[#89f6bf]" : connection === "error" ? "border-rose-400/30 bg-rose-400/10 text-rose-300" : "border-white/10 bg-white/5 text-[#a9bdb6]") + " hidden rounded-full border px-3 py-1 text-xs sm:block"}>{statusLabel}</span>
-          <Button type="button" variant="ghost" size="icon" onClick={() => { setMessage(""); setSettingsOpen(true); }} aria-label="Open OANDA connection settings" className="h-10 w-10 text-[#e8f3ee] hover:bg-white/10"><Settings2 size={20}/></Button>
+          <Button type="button" variant="ghost" size="icon" onClick={() => { setMessage(""); setSettingsOpen(true); }} aria-label="Open data and AI settings" className="h-10 w-10 text-[#e8f3ee] hover:bg-white/10"><Settings2 size={20}/></Button>
         </div>
       </header>
 
       <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
         <DialogContent className="border-white/10 bg-[#0c1916] text-white">
-          <DialogHeader><DialogTitle>Connect OANDA</DialogTitle><DialogDescription className="text-[#a9bdb6]">Your token is tested against OANDA live pricing, encrypted, and saved securely. It is never displayed again.</DialogDescription></DialogHeader>
+          <DialogHeader><DialogTitle>Data and AI settings</DialogTitle><DialogDescription className="text-[#a9bdb6]">Keys are validated, encrypted and saved server-side. They are never displayed again.</DialogDescription></DialogHeader>
           <div className="grid gap-3">
+            <div className="flex items-center justify-between"><p className="text-sm font-semibold">OANDA market data</p><StatusDot connected={connection === "connected" || connection === "configured"}/></div>
             <label className="text-sm text-[#a9bdb6]">Account environment</label>
             <Select value={environment} onValueChange={(value) => setEnvironment(value as "practice" | "live")}><SelectTrigger className="w-full border-white/10 bg-[#10221d] text-white"><SelectValue/></SelectTrigger><SelectContent><SelectItem value="practice">Practice account</SelectItem><SelectItem value="live">Live account</SelectItem></SelectContent></Select>
             <label className="mt-2 text-sm text-[#a9bdb6]">Personal access token</label>
             <input value={token} onChange={(event) => setToken(event.target.value)} type="password" autoComplete="off" placeholder="Paste your OANDA token" className="h-10 rounded-md border border-white/10 bg-[#10221d] px-3 text-sm outline-none focus:border-[#a4ffcf]"/>
             <Button onClick={saveConnection} disabled={!token || saving} className="mt-2 bg-[#a4ffcf] text-[#07100f] hover:bg-[#d0ffe1]"><RefreshCw className={saving ? "animate-spin" : ""}/>{saving ? "Validating…" : "Validate and save"}</Button>
             {message && <p className="text-xs text-rose-300">{message}</p>}
+            <div className="my-2 border-t border-white/10"/>
+            <div className="flex items-center justify-between"><div><p className="text-sm font-semibold">OpenAI strategy analysis</p><p className="mt-1 text-xs text-[#81978f]">Uses GPT-5.5 Structured Outputs for the top three daily cards.</p></div><StatusDot connected={aiConnected}/></div>
+            <label className="mt-2 text-sm text-[#a9bdb6]">OpenAI API key</label>
+            <input value={aiKey} onChange={(event) => setAiKey(event.target.value)} type="password" autoComplete="off" placeholder={aiConnected ? "Connected — paste to replace key" : "Paste your OpenAI API key"} className="h-10 rounded-md border border-white/10 bg-[#10221d] px-3 text-sm outline-none focus:border-[#a4ffcf]"/>
+            <Button onClick={saveAiConnection} disabled={!aiKey || aiSaving} className="bg-white/10 text-white hover:bg-white/15"><Sparkles className={aiSaving ? "animate-spin" : ""}/>{aiSaving ? "Validating…" : aiConnected ? "Replace AI key" : "Validate and save AI key"}</Button>
+            {aiError && <p className="text-xs text-rose-300">{aiError}</p>}
           </div>
         </DialogContent>
       </Dialog>
@@ -225,18 +291,30 @@ export default function Home() {
           </div>
 
           {scannerError && <div className="border-b border-rose-400/20 bg-rose-400/10 px-5 py-3 text-sm text-rose-200">{scannerError}</div>}
-          {topSetup && <button onClick={() => { setQuote(null); setInstrument(topSetup.instrument); }} className="w-full border-b border-white/10 bg-[#a4ffcf]/[.045] p-5 text-left"><div className="grid gap-4 lg:grid-cols-[1fr_.65fr_1.5fr]"><div><p className="text-[10px] tracking-[.14em] text-[#89f6bf]">TOP-RANKED TRADE PLAN</p><p className="mt-1 text-2xl font-semibold">{topSetup.label}</p><div className="mt-2"><Bias bias={topSetup.bias}/><span className="ml-2 text-xs text-[#8aa29a]">Score {topSetup.score}/100</span></div></div><div className="grid grid-cols-2 gap-2 text-xs"><PlanLevel label="Entry" value={formatScannerPrice(topSetup.instrument, topSetup.entry)}/><PlanLevel label="Stop" value={formatScannerPrice(topSetup.instrument, topSetup.stopLoss)} tone="risk"/><PlanLevel label="TP1 · 1.5R" value={formatScannerPrice(topSetup.instrument, topSetup.takeProfit1)} tone="reward"/><PlanLevel label="TP2 · 2.5R" value={formatScannerPrice(topSetup.instrument, topSetup.takeProfit2)} tone="reward"/></div><div><p className="text-sm leading-6 text-[#c0d1ca]">{topSetup.analysis}</p><p className="mt-1 text-xs text-[#81978f]">{topSetup.reasons.join(" · ")}</p></div></div></button>}
+          {topSetup && <button onClick={() => { setQuote(null); setInstrument(topSetup.instrument); }} className="w-full border-b border-white/10 bg-[#a4ffcf]/[.045] p-5 text-left"><div className="grid gap-4 lg:grid-cols-[.8fr_1.5fr]"><div><p className="text-[10px] tracking-[.14em] text-[#89f6bf]">TOP TECHNICAL CANDIDATE</p><p className="mt-1 text-2xl font-semibold">{topSetup.label}</p><div className="mt-2"><Bias bias={topSetup.bias}/><span className="ml-2 text-xs text-[#8aa29a]">Score {topSetup.score}/100</span></div></div><div><p className="text-sm leading-6 text-[#c0d1ca]">{topSetup.analysis}</p><p className="mt-1 text-xs text-[#81978f]">{topSetup.reasons.join(" · ")}</p></div></div></button>}
 
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[1280px] text-left text-sm">
-              <thead className="text-[10px] uppercase tracking-[.12em] text-[#71887f]"><tr><th className="px-5 py-3 font-medium">Rank</th><th className="px-3 py-3 font-medium">Market</th><th className="px-3 py-3 font-medium">Bias</th><th className="px-3 py-3 font-medium">Score</th><th className="px-3 py-3 font-medium">Entry</th><th className="px-3 py-3 font-medium">Stop loss</th><th className="px-3 py-3 font-medium">TP1 · 1.5R</th><th className="px-3 py-3 font-medium">TP2 · 2.5R</th><th className="px-3 py-3 font-medium">24h</th><th className="px-3 py-3 font-medium">RSI</th><th className="px-5 py-3 font-medium">Analysis and reasons</th></tr></thead>
+            <table className="w-full min-w-[900px] text-left text-sm">
+              <thead className="text-[10px] uppercase tracking-[.12em] text-[#71887f]"><tr><th className="px-5 py-3 font-medium">Rank</th><th className="px-3 py-3 font-medium">Market</th><th className="px-3 py-3 font-medium">Bias</th><th className="px-3 py-3 font-medium">Score</th><th className="px-3 py-3 font-medium">24h</th><th className="px-3 py-3 font-medium">RSI</th><th className="px-5 py-3 font-medium">Technical analysis and reasons</th></tr></thead>
               <tbody className="divide-y divide-white/[.06]">
-                {scanner?.results.map((result, index) => <tr key={result.instrument} onClick={() => { setQuote(null); setInstrument(result.instrument); }} className="cursor-pointer align-top transition-colors hover:bg-white/[.035]"><td className="px-5 py-4 text-[#71887f]">{index + 1}</td><td className="px-3 py-4 font-medium">{result.label}<span className="ml-2 text-[10px] uppercase text-[#71887f]">{result.assetClass}</span></td><td className="px-3 py-4"><Bias bias={result.bias}/></td><td className="px-3 py-4 font-mono">{result.score}</td><td className="px-3 py-4 font-mono">{formatScannerPrice(result.instrument, result.entry)}</td><td className="px-3 py-4 font-mono text-rose-300">{formatScannerPrice(result.instrument, result.stopLoss)}</td><td className="px-3 py-4 font-mono text-[#89f6bf]">{formatScannerPrice(result.instrument, result.takeProfit1)}</td><td className="px-3 py-4 font-mono text-[#89f6bf]">{formatScannerPrice(result.instrument, result.takeProfit2)}</td><td className={(result.change24h >= 0 ? "text-[#59dfa9]" : "text-rose-400") + " px-3 py-4 font-mono"}>{result.change24h >= 0 ? "+" : ""}{result.change24h.toFixed(2)}%</td><td className="px-3 py-4 font-mono">{result.rsi.toFixed(0)}</td><td className="max-w-[390px] px-5 py-4"><p className="text-xs leading-5 text-[#c0d1ca]">{result.analysis}</p><ul className="mt-1 space-y-0.5 text-[11px] leading-4 text-[#81978f]">{result.reasons.map((reason) => <li key={reason}>• {reason}</li>)}</ul><p className="mt-1 text-[10px] text-amber-200/70">Invalidation: {result.invalidation}</p></td></tr>)}
-                {!scanner && <tr><td colSpan={11} className="px-5 py-10 text-center text-[#71887f]">{scanning ? "Reading OANDA H4 structure across 12 markets…" : "Run the daily scan to rank today’s opportunities."}</td></tr>}
+                {scanner?.results.map((result, index) => <tr key={result.instrument} onClick={() => { setQuote(null); setInstrument(result.instrument); }} className="cursor-pointer align-top transition-colors hover:bg-white/[.035]"><td className="px-5 py-4 text-[#71887f]">{index + 1}</td><td className="px-3 py-4 font-medium">{result.label}<span className="ml-2 text-[10px] uppercase text-[#71887f]">{result.assetClass}</span></td><td className="px-3 py-4"><Bias bias={result.bias}/></td><td className="px-3 py-4 font-mono">{result.score}</td><td className={(result.change24h >= 0 ? "text-[#59dfa9]" : "text-rose-400") + " px-3 py-4 font-mono"}>{result.change24h >= 0 ? "+" : ""}{result.change24h.toFixed(2)}%</td><td className="px-3 py-4 font-mono">{result.rsi.toFixed(0)}</td><td className="max-w-[520px] px-5 py-4"><p className="text-xs leading-5 text-[#c0d1ca]">{result.analysis}</p><ul className="mt-1 space-y-0.5 text-[11px] leading-4 text-[#81978f]">{result.reasons.map((reason) => <li key={reason}>• {reason}</li>)}</ul><p className="mt-1 text-[10px] text-amber-200/70">Invalidation: {result.invalidation}</p></td></tr>)}
+                {!scanner && <tr><td colSpan={7} className="px-5 py-10 text-center text-[#71887f]">{scanning ? "Reading OANDA H4 structure across 12 markets…" : "Run the daily scan to rank today’s opportunities."}</td></tr>}
               </tbody>
             </table>
           </div>
           {scanner && <div className="flex flex-col justify-between gap-2 border-t border-white/10 px-5 py-3 text-[11px] text-[#71887f] sm:flex-row"><span>Generated {new Date(scanner.generatedAt).toLocaleString("en-GB", { timeZone: "UTC" })} UTC</span><span>{scanner.unavailable.length ? "Unavailable on this OANDA account: " + scanner.unavailable.map((item) => item.label).join(", ") : "All 12 required markets included"}</span></div>}
+        </section>
+
+        {scanner?.results.length ? <section className="mb-5">
+          <div className="mb-4 flex flex-col justify-between gap-3 sm:flex-row sm:items-end"><div><p className="text-xs tracking-[.14em] text-[#8aa29a]">DAILY AI ANALYSIS CARDS</p><h2 className="mt-1 text-xl">LLM-designed strategies for the top three setups</h2><p className="mt-1 text-xs text-[#71887f]">GPT-5.5 evaluates the H4 snapshot and may return wait/no trade.</p></div><Button onClick={() => void generateAiStrategies(scanner.results, scanner.generatedAt)} disabled={!aiConnected || aiLoading} className="bg-[#a4ffcf] text-[#07100f] hover:bg-[#d0ffe1]"><BrainCircuit className={aiLoading ? "animate-spin" : ""}/>{aiLoading ? "Analysing top 3…" : aiConnected ? "Regenerate AI plans" : "Add AI key in Settings"}</Button></div>
+          {aiError && <div className="mb-4 rounded-xl border border-rose-400/20 bg-rose-400/10 p-3 text-sm text-rose-200">{aiError} <button onClick={() => setSettingsOpen(true)} className="ml-1 underline underline-offset-4">Open Settings</button></div>}
+          <div className="grid gap-4 xl:grid-cols-3">{scanner.results.slice(0, 3).map((result, index) => { const plan = aiData?.strategies.find((item) => item.instrument === result.instrument); return <article key={result.instrument} className="rounded-2xl border border-white/10 bg-[#0c1916] p-5"><button onClick={() => { setQuote(null); setInstrument(result.instrument); }} className="w-full text-left"><div className="flex items-start justify-between"><div><p className="text-[10px] tracking-[.14em] text-[#71887f]">AI STRATEGY {index + 1}</p><h3 className="mt-1 text-xl font-semibold">{result.label}</h3><p className="mt-1 text-xs text-[#8aa29a]">{plan?.strategyName ?? "Awaiting AI analysis"}</p></div><div className="text-right"><Bias bias={plan?.verdict === "wait" || !plan ? "neutral" : plan.verdict}/><p className="mt-1 text-xs text-[#8aa29a]">{plan ? `${plan.confidence}% confidence` : `${result.score}/100 technical`}</p></div></div></button>{plan ? <><p className="mt-4 min-h-12 text-sm leading-6 text-[#b8cac3]">{plan.analysis}</p><div className="mt-4 grid grid-cols-2 gap-2"><PlanLevel label={`${plan.entryType} entry`} value={formatScannerPrice(result.instrument, plan.entry)}/><PlanLevel label="AI stop loss" value={formatScannerPrice(result.instrument, plan.stopLoss)} tone="risk"/><PlanLevel label={`AI TP1${plan.riskReward1 ? ` · ${plan.riskReward1.toFixed(1)}R` : ""}`} value={formatScannerPrice(result.instrument, plan.takeProfit1)} tone="reward"/><PlanLevel label={`AI TP2${plan.riskReward2 ? ` · ${plan.riskReward2.toFixed(1)}R` : ""}`} value={formatScannerPrice(result.instrument, plan.takeProfit2)} tone="reward"/></div><p className="mt-3 text-xs leading-5 text-[#a9bdb6]"><span className="text-[#89f6bf]">Trigger:</span> {plan.trigger}</p><ul className="mt-3 space-y-1 text-xs leading-5 text-[#81978f]">{plan.reasons.map((reason) => <li key={reason}>• {reason}</li>)}</ul><p className="mt-3 text-[11px] leading-4 text-rose-200/75">Invalidation: {plan.invalidation}</p><div className="mt-4 flex items-start gap-2 rounded-lg border border-amber-300/10 bg-amber-300/[.05] p-3 text-[11px] leading-4 text-amber-100/70"><ShieldAlert className="mt-0.5 shrink-0" size={14}/><span>{plan.eventRisk}</span></div></> : <div className="mt-4 grid min-h-64 place-items-center rounded-xl border border-dashed border-white/10 p-6 text-center"><div><BrainCircuit className="mx-auto text-[#71887f]"/><p className="mt-3 text-sm text-[#a9bdb6]">{aiLoading ? "The LLM is designing entry, stop and targets…" : "Add an OpenAI API key in Settings to generate this strategy."}</p></div></div>}</article>; })}</div>
+          {aiData && <p className="mt-3 text-[11px] text-[#71887f]">Generated {new Date(aiData.generatedAt).toLocaleString("en-GB", { timeZone: "UTC" })} UTC with {aiData.model}. Refreshing the technical scan regenerates these plans.</p>}
+        </section> : null}
+
+        <section className="mb-5 grid gap-4 xl:grid-cols-2">
+          <div className="overflow-hidden rounded-2xl border border-white/10 bg-[#0c1916]"><div className="flex items-start gap-3 border-b border-white/10 p-5"><span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-[#a4ffcf]/10 text-[#a4ffcf]"><Newspaper size={18}/></span><div><p className="text-xs tracking-[.14em] text-[#8aa29a]">PAIR NEWS</p><h2 className="mt-1 text-lg">{instrument.replace("_", " / ")} related headlines</h2><p className="mt-1 text-xs text-[#71887f]">Changes automatically when you select a scanner result</p></div></div><PairNews instrument={instrument}/></div>
+          <div className="overflow-hidden rounded-2xl border border-white/10 bg-[#0c1916]"><div className="flex items-start gap-3 border-b border-white/10 p-5"><span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-amber-300/10 text-amber-200"><CalendarDays size={18}/></span><div><p className="text-xs tracking-[.14em] text-[#8aa29a]">ECONOMIC EVENT RISK</p><h2 className="mt-1 text-lg">Scanner currency calendar</h2><p className="mt-1 text-xs text-[#71887f]">US, Eurozone, UK, Japan, Switzerland, Canada, Australia and New Zealand</p></div></div><EconomicCalendar/></div>
         </section>
 
         <section className="grid gap-4 xl:grid-cols-[1.65fr_.95fr]">
@@ -286,3 +364,4 @@ function Metric({ label, value, tone }: { label: string; value: string; tone?: "
 function Row({ label, value }: { label: string; value: string }) { return <div className="flex justify-between gap-4"><span className="text-[#8aa29a]">{label}</span><span className="text-right capitalize">{value}</span></div>; }
 function Bias({ bias }: { bias: "long" | "short" | "neutral" }) { return <span className={(bias === "long" ? "bg-[#59dfa9]/10 text-[#89f6bf]" : bias === "short" ? "bg-rose-400/10 text-rose-300" : "bg-amber-400/10 text-amber-300") + " inline-flex rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[.1em]"}>{bias}</span>; }
 function PlanLevel({ label, value, tone }: { label: string; value: string; tone?: "risk" | "reward" }) { return <div className="rounded-md bg-black/20 p-2"><p className="text-[9px] uppercase tracking-[.1em] text-[#71887f]">{label}</p><p className={(tone === "risk" ? "text-rose-300" : tone === "reward" ? "text-[#89f6bf]" : "text-white") + " mt-0.5 font-mono"}>{value}</p></div>; }
+function StatusDot({ connected }: { connected: boolean }) { return <span className={(connected ? "bg-[#59dfa9]/10 text-[#89f6bf]" : "bg-white/5 text-[#81978f]") + " rounded-full px-2.5 py-1 text-[10px] uppercase tracking-[.1em]"}>{connected ? "Connected" : "Not connected"}</span>; }

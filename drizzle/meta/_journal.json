@@ -15,6 +15,13 @@
       "when": 1788099741717,
       "tag": "0001_slimy_drax",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1788108443189,
+      "tag": "0002_overjoyed_mentallo",
+      "breakpoints": true
     }
   ]
 }

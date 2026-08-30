@@ -8,3 +8,11 @@ export const oandaConnection = sqliteTable("oanda_connection", {
   updatedAt: text("updated_at").notNull(),
   accountId: text("account_id"),
 });
+
+export const aiConnection = sqliteTable("ai_connection", {
+  id: text("id").primaryKey(),
+  keyCiphertext: text("key_ciphertext").notNull(),
+  keyIv: text("key_iv").notNull(),
+  model: text("model").notNull().default("gpt-5.5"),
+  updatedAt: text("updated_at").notNull(),
+});
