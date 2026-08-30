@@ -44,4 +44,9 @@ test("ranks a strongly trending instrument with an actionable bias", async () =>
   assert.equal(result.bias, "long");
   assert.ok(result.score >= 70);
   assert.ok(result.atrPercent > 0);
+  assert.ok(result.stopLoss < result.entry);
+  assert.ok(result.takeProfit1 > result.entry);
+  assert.ok(result.takeProfit2 > result.takeProfit1);
+  assert.equal(result.riskReward1, 1.5);
+  assert.equal(result.reasons.length, 4);
 });

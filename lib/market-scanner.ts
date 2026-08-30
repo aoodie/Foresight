@@ -11,6 +11,15 @@ export type ScannerResult = {
   rsi: number;
   atrPercent: number;
   rangePosition: number;
+  entry: number | null;
+  stopLoss: number | null;
+  takeProfit1: number | null;
+  takeProfit2: number | null;
+  riskReward1: number | null;
+  riskReward2: number | null;
+  analysis: string;
+  reasons: string[];
+  invalidation: string;
   setup: string;
   updatedAt: string;
 };
@@ -71,6 +80,24 @@ export function analyseInstrument(args: {
   const trend = price > ema20 && ema20 > ema50 ? "trend aligned" : price < ema20 && ema20 < ema50 ? "trend aligned" : "mixed trend";
   const momentumLabel = Math.abs(momentum) >= 0.8 ? "strong momentum" : Math.abs(momentum) >= 0.35 ? "steady momentum" : "soft momentum";
   const setup = bias === "neutral" ? "Wait — mixed structure" : (bias === "long" ? "Buy watch" : "Sell watch") + " · " + trend + " · " + momentumLabel;
+  const direction = bias === "long" ? 1 : bias === "short" ? -1 : 0;
+  const stopDistance = currentAtr * 1.25;
+  const entry = direction ? price : null;
+  const stopLoss = direction ? price - direction * stopDistance : null;
+  const takeProfit1 = direction ? price + direction * stopDistance * 1.5 : null;
+  const takeProfit2 = direction ? price + direction * stopDistance * 2.5 : null;
+  const reasons = [
+    "Price is " + (price >= ema20 ? "above" : "below") + " the H4 EMA20",
+    "EMA20 is " + (ema20 >= ema50 ? "above" : "below") + " EMA50",
+    "RSI " + currentRsi.toFixed(0) + (currentRsi >= 55 ? " supports bullish momentum" : currentRsi <= 45 ? " supports bearish momentum" : " is neutral"),
+    "24h move is " + change24h.toFixed(2) + "% (" + Math.abs(momentum).toFixed(1) + " ATR)",
+  ];
+  const analysis = bias === "neutral"
+    ? "No clean directional edge: trend and momentum are not sufficiently aligned."
+    : (bias === "long" ? "Bullish" : "Bearish") + " H4 structure with " + momentumLabel + "; wait for intraday confirmation near the reference entry.";
+  const invalidation = bias === "neutral"
+    ? "Do not enter until H4 structure becomes directional."
+    : "The setup is invalid if price closes beyond the reference stop or the H4 EMA structure flips.";
 
   return {
     instrument: args.instrument,
@@ -83,6 +110,15 @@ export function analyseInstrument(args: {
     rsi: currentRsi,
     atrPercent: (currentAtr / price) * 100,
     rangePosition,
+    entry,
+    stopLoss,
+    takeProfit1,
+    takeProfit2,
+    riskReward1: direction ? 1.5 : null,
+    riskReward2: direction ? 2.5 : null,
+    analysis,
+    reasons,
+    invalidation,
     setup,
     updatedAt: candles.at(-1)!.time,
   };
