@@ -1098,7 +1098,7 @@ export default function Home() {
             />
             <Button
               onClick={saveAiConnection}
-              disabled={!aiKey || aiSaving}
+              disabled={aiSaving || !aiModel.trim() || (!aiKey && !aiConnected)}
               className="bg-white/10 text-white hover:bg-white/15"
             >
               <Sparkles className={aiSaving ? "animate-spin" : ""} />
