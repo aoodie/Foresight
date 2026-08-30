@@ -230,10 +230,14 @@ export default function Home() {
   const [aiError, setAiError] = useState("");
   const [aiData, setAiData] = useState<AiStrategyData | null>(null);
   const [aiSourceScan, setAiSourceScan] = useState("");
+  const [aiPriceSnapshot, setAiPriceSnapshot] = useState<
+    Record<string, number>
+  >({});
   const scanRequested = useRef(false);
 
   const generateAiStrategies = useCallback(
-    async (markets: ScanResult[], sourceScan: string) => {
+    async (markets: ScanResult[], sourceScan: string, force = false) => {
+      void force;
       setAiLoading(true);
       setAiError("");
       setAiSourceScan(sourceScan);
@@ -250,6 +254,11 @@ export default function Home() {
         if (!response.ok)
           throw new Error(payload.error || "Unable to generate AI strategies.");
         setAiData(payload);
+        setAiPriceSnapshot(
+          Object.fromEntries(
+            markets.map((market) => [market.instrument, market.price]),
+          ),
+        );
       } catch (error) {
         setAiError(
           error instanceof Error
@@ -261,6 +270,23 @@ export default function Home() {
       }
     },
     [scanMode, scanner],
+  );
+
+  const aiNeedsRefresh = useCallback(
+    (markets: ScanResult[]) => {
+      if (!aiData || !markets.length) return true;
+      return markets.some((market) => {
+        const previous = aiPriceSnapshot[market.instrument];
+        if (!previous) return true;
+        const move = Math.abs(market.price - previous) / previous;
+        const meaningfulMove = Math.max(
+          0.0005,
+          (market.atrPercent * 0.25) / 100,
+        );
+        return move >= meaningfulMove;
+      });
+    },
+    [aiData, aiPriceSnapshot],
   );
 
   const runScanner = useCallback(async () => {
@@ -427,14 +453,22 @@ export default function Home() {
       !aiConnected ||
       !scanner?.results.length ||
       aiLoading ||
-      aiSourceScan === scanner.generatedAt
+      aiSourceScan === scanner.generatedAt ||
+      !aiNeedsRefresh(scanner.results)
     )
       return;
     const timer = window.setTimeout(() => {
       void generateAiStrategies(scanner.results, scanner.generatedAt);
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [aiConnected, aiLoading, aiSourceScan, generateAiStrategies, scanner]);
+  }, [
+    aiConnected,
+    aiLoading,
+    aiNeedsRefresh,
+    aiSourceScan,
+    generateAiStrategies,
+    scanner,
+  ]);
 
   useEffect(() => {
     if (
@@ -998,6 +1032,7 @@ export default function Home() {
                       void generateAiStrategies(
                         scanner.results,
                         scanner.generatedAt,
+                        true,
                       )
                     }
                     disabled={!aiConnected || aiLoading}
@@ -1165,8 +1200,9 @@ export default function Home() {
                       {new Date(aiData.generatedAt).toLocaleString("en-GB", {
                         timeZone: "UTC",
                       })}{" "}
-                      UTC with {aiData.model}. Refreshing the technical scan
-                      regenerates these plans.
+                      UTC with {aiData.model}. Plans are reused while price
+                      movement remains insignificant; use Regenerate for a
+                      manual refresh.
                     </p>
                     <p>
                       Grounded by{" "}
@@ -1582,6 +1618,7 @@ export default function Home() {
                                     [marketSetup],
                                     scanner?.generatedAt ??
                                       new Date().toISOString(),
+                                    true,
                                   )
                                 : setSettingsOpen(true)
                             }
