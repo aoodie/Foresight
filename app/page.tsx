@@ -772,7 +772,7 @@ export default function Home() {
       if (!response.ok)
         throw new Error(payload.error || "Order could not be submitted.");
       setOrderStatus(
-        `Live order submitted · ${payload.orderId ?? "no ID"}`,
+        `${payload.accountEnvironment === "practice" ? "Demo" : "Live"} OANDA order submitted · ${payload.orderId ?? "no ID"}`,
       );
       if (payload.mode === "live") void refreshTrades();
       setLiveConfirm(false);
@@ -999,12 +999,12 @@ export default function Home() {
       <Dialog open={flattenConfirmOpen} onOpenChange={setFlattenConfirmOpen}>
         <DialogContent className="border-rose-300/20 bg-[#0c1916] text-white">
           <DialogHeader>
-            <DialogTitle>Confirm live flatten</DialogTitle>
+            <DialogTitle>Confirm OANDA flatten</DialogTitle>
             <DialogDescription className="text-[#a9bdb6]">
               {flattenScope === "all"
-                ? "This will close every open trade on your connected OANDA Live account."
-                : `This will close every open ${instrument} trade on your connected OANDA Live account.`}
-              {" "}This is an immediate real-money action and cannot be undone.
+                ? `This will close every open trade on your connected OANDA ${environment === "practice" ? "Demo" : "Live"} account.`
+                : `This will close every open ${instrument} trade on your connected OANDA ${environment === "practice" ? "Demo" : "Live"} account.`}
+              {" "}{environment === "practice" ? "The demo account uses virtual funds, but the action is immediate." : "This is an immediate real-money action and cannot be undone."}
             </DialogDescription>
           </DialogHeader>
           <div className="flex gap-2">
@@ -1878,10 +1878,10 @@ export default function Home() {
                       </div>
                       <div className="mt-4 rounded-xl border border-[#a4ffcf]/15 bg-[#07100f] p-4">
                         <p className="text-[10px] tracking-[.12em] text-[#89f6bf]">
-                          LIVE EXECUTION
+                          OANDA EXECUTION
                         </p>
                         <div className="mt-2 rounded-lg border border-rose-300/20 bg-rose-300/[.06] p-3 text-xs leading-5 text-rose-100">
-                          Live OANDA orders are enabled. Confirm every order after reviewing the calculated risk below.
+                          {environment === "practice" ? "Demo OANDA orders are enabled and use virtual funds." : "Live OANDA orders are enabled and use real funds."} Confirm every order after reviewing the calculated risk below.
                         </div>
                         <div className="mt-3 grid gap-3 sm:grid-cols-2">
                           <Select
@@ -1944,7 +1944,7 @@ export default function Home() {
                               }
                               className="mt-0.5"
                             />
-                            I understand this can place a real OANDA order.
+                            I understand this will submit an order to my OANDA {environment === "practice" ? "Demo" : "Live"} account.
                           </label>
                         )}
                         <Button
@@ -1957,7 +1957,7 @@ export default function Home() {
                           }
                           className="mt-3 w-full bg-[#a4ffcf] text-[#07100f] hover:bg-[#d0ffe1]"
                         >
-                          Submit live order
+                          Submit OANDA order
                         </Button>
                         {orderStatus && (
                           <p className="mt-2 text-xs text-[#89f6bf]">
@@ -1967,7 +1967,7 @@ export default function Home() {
                         <div className="mt-3 grid gap-2 sm:grid-cols-2">
                           <Button
                             variant="outline"
-                            disabled={environment !== "live" || !monitoredTrade}
+                            disabled={!monitoredTrade}
                             onClick={() => {
                               setFlattenScope("selected");
                               setFlattenConfirmOpen(true);
@@ -1978,7 +1978,7 @@ export default function Home() {
                           </Button>
                           <Button
                             variant="outline"
-                            disabled={environment !== "live" || !openTrades.length}
+                            disabled={!openTrades.length}
                             onClick={() => {
                               setFlattenScope("all");
                               setFlattenConfirmOpen(true);
@@ -1991,7 +1991,7 @@ export default function Home() {
                         {executionMode === "live" && (
                           <div className={(tradeReview?.drifted ? "border-rose-300/30 bg-rose-300/[.08]" : "border-[#a4ffcf]/15 bg-[#a4ffcf]/[.04]") + " mt-3 rounded-lg border p-3 text-xs leading-5"}>
                             <p className="font-medium text-white">
-                              Live trade monitor {monitoredTrade ? `· ${monitoredTrade.id}` : "· no open trade on this market"}
+                              OANDA trade monitor · {environment === "practice" ? "Demo" : "Live"} {monitoredTrade ? `· ${monitoredTrade.id}` : "· no open trade on this market"}
                             </p>
                             {monitoredTrade ? (
                               <>

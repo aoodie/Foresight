@@ -1,6 +1,7 @@
 import { headers } from "next/headers";
 import { NextResponse } from "next/server";
 import { createJournalEntry, updateJournalEntry } from "@/lib/trading-records";
+import { getOandaToken } from "@/lib/oanda-secret";
 import { env } from "cloudflare:workers";
 
 async function ownerRequest() { return Boolean((await headers()).get("oai-authenticated-user-email")); }
@@ -19,7 +20,7 @@ export async function POST(request: Request) {
   if (!body || typeof body.instrument !== "string" || typeof body.direction !== "string" || typeof body.style !== "string") return NextResponse.json({ error: "Instrument, direction and trading style are required." }, { status: 400 });
   try {
     const id = await createJournalEntry({
-      environment: typeof body.environment === "string" ? body.environment : "paper",
+      environment: body.environment === "live" || body.environment === "practice" ? body.environment : (await getOandaToken())?.environment ?? "practice",
       accountId: typeof body.accountId === "string" ? body.accountId : null,
       instrument: body.instrument, direction: body.direction, style: body.style,
       strategyName: typeof body.strategyName === "string" ? body.strategyName : null,
