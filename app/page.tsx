@@ -210,6 +210,7 @@ export default function Home() {
     "practice",
   );
   const [token, setToken] = useState("");
+  const [accountId, setAccountId] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -455,7 +456,7 @@ export default function Home() {
       const response = await fetch("/api/oanda/connection", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token, environment }),
+        body: JSON.stringify({ token, accountId, environment }),
       });
       const payload = await response.json();
       if (!response.ok)
@@ -647,6 +648,17 @@ export default function Home() {
               type="password"
               autoComplete="off"
               placeholder="Paste your OANDA token"
+              className="h-10 rounded-md border border-white/10 bg-[#10221d] px-3 text-sm outline-none focus:border-[#a4ffcf]"
+            />
+            <label className="mt-2 text-sm text-[#a9bdb6]">
+              OANDA account number
+            </label>
+            <input
+              value={accountId}
+              onChange={(event) => setAccountId(event.target.value)}
+              type="text"
+              autoComplete="off"
+              placeholder="e.g. 101-001-1234567-001"
               className="h-10 rounded-md border border-white/10 bg-[#10221d] px-3 text-sm outline-none focus:border-[#a4ffcf]"
             />
             <Button
