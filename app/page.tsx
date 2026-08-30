@@ -266,10 +266,12 @@ export default function Home() {
     Record<string, number>
   >({});
   const [aiHydrated, setAiHydrated] = useState(false);
-  const [executionMode, setExecutionMode] = useState<"paper" | "live">("paper");
+  const executionMode = "live" as const;
   const [riskPercent, setRiskPercent] = useState("0.5");
   const [orderStatus, setOrderStatus] = useState("");
   const [liveConfirm, setLiveConfirm] = useState(false);
+  const [flattenConfirmOpen, setFlattenConfirmOpen] = useState(false);
+  const [flattenScope, setFlattenScope] = useState<"selected" | "all">("selected");
   const scanRequested = useRef(false);
   const reviewMemory = useRef<Record<string, { price: number; at: number }>>({});
   const reviewBusy = useRef(false);
@@ -770,7 +772,7 @@ export default function Home() {
       if (!response.ok)
         throw new Error(payload.error || "Order could not be submitted.");
       setOrderStatus(
-        `${payload.mode === "paper" ? "Paper order simulated" : "Live order submitted"} · ${payload.orderId ?? "no ID"}`,
+        `Live order submitted · ${payload.orderId ?? "no ID"}`,
       );
       if (payload.mode === "live") void refreshTrades();
       setLiveConfirm(false);
@@ -780,6 +782,24 @@ export default function Home() {
           ? error.message
           : "Order could not be submitted.",
       );
+    }
+  };
+  const flattenTrades = async () => {
+    setOrderStatus(flattenScope === "all" ? "Flattening all open trades…" : `Flattening ${instrument}…`);
+    try {
+      const response = await fetch("/api/oanda/flatten", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scope: flattenScope, instrument, confirm: true }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Flatten request failed.");
+      setOrderStatus(payload.status === "no_open_trades" ? "No open trades to flatten." : `Flatten complete · ${payload.closed} trade(s) closed.`);
+      setFlattenConfirmOpen(false);
+      void refreshTrades();
+      void refreshAccount();
+    } catch (error) {
+      setOrderStatus(error instanceof Error ? error.message : "Flatten request failed.");
     }
   };
   const isOverview = pathname === "/";
@@ -972,6 +992,24 @@ export default function Home() {
                   : "Validate and save AI key"}
             </Button>
             {aiError && <p className="text-xs text-rose-300">{aiError}</p>}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={flattenConfirmOpen} onOpenChange={setFlattenConfirmOpen}>
+        <DialogContent className="border-rose-300/20 bg-[#0c1916] text-white">
+          <DialogHeader>
+            <DialogTitle>Confirm live flatten</DialogTitle>
+            <DialogDescription className="text-[#a9bdb6]">
+              {flattenScope === "all"
+                ? "This will close every open trade on your connected OANDA Live account."
+                : `This will close every open ${instrument} trade on your connected OANDA Live account.`}
+              {" "}This is an immediate real-money action and cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex gap-2">
+            <Button variant="ghost" onClick={() => setFlattenConfirmOpen(false)} className="flex-1 text-white hover:bg-white/10">Cancel</Button>
+            <Button onClick={() => void flattenTrades()} className="flex-1 bg-rose-500 text-white hover:bg-rose-400">Confirm flatten</Button>
           </div>
         </DialogContent>
       </Dialog>
@@ -1840,8 +1878,11 @@ export default function Home() {
                       </div>
                       <div className="mt-4 rounded-xl border border-[#a4ffcf]/15 bg-[#07100f] p-4">
                         <p className="text-[10px] tracking-[.12em] text-[#89f6bf]">
-                          AUTO-TRADE
+                          LIVE EXECUTION
                         </p>
+                        <div className="mt-2 rounded-lg border border-rose-300/20 bg-rose-300/[.06] p-3 text-xs leading-5 text-rose-100">
+                          Live OANDA orders are enabled. Confirm every order after reviewing the calculated risk below.
+                        </div>
                         <div className="mt-3 grid gap-3 sm:grid-cols-2">
                           <Select
                             value={scanMode}
@@ -1858,25 +1899,6 @@ export default function Home() {
                               <SelectItem value="scalping">Scalping · M5 entry</SelectItem>
                               <SelectItem value="intraday">Intraday · M15 entry</SelectItem>
                               <SelectItem value="swing">Swing · M15 entry</SelectItem>
-                            </SelectContent>
-                          </Select>
-                          <Select
-                            value={executionMode}
-                            onValueChange={(value) => {
-                              setExecutionMode(value as "paper" | "live");
-                              setLiveConfirm(false);
-                            }}
-                          >
-                            <SelectTrigger className="border-white/10 bg-[#10221d] text-white">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="paper">
-                                Paper trading (safe)
-                              </SelectItem>
-                              <SelectItem value="live">
-                                Live OANDA (locked)
-                              </SelectItem>
                             </SelectContent>
                           </Select>
                           <input
@@ -1912,7 +1934,7 @@ export default function Home() {
                         <p className="mt-2 text-[11px] leading-4 text-[#71887f]">
                           Position size is calculated from account equity, your risk percentage, the selected strategy’s stop distance and OANDA’s home-currency conversion rate. No fixed unit size is used.
                         </p>
-                        {executionMode === "live" && (
+                          {executionMode === "live" && (
                           <label className="mt-3 flex items-start gap-2 text-xs text-amber-100/80">
                             <input
                               type="checkbox"
@@ -1935,15 +1957,37 @@ export default function Home() {
                           }
                           className="mt-3 w-full bg-[#a4ffcf] text-[#07100f] hover:bg-[#d0ffe1]"
                         >
-                          {executionMode === "paper"
-                            ? "Simulate paper order"
-                            : "Submit live order"}
+                          Submit live order
                         </Button>
                         {orderStatus && (
                           <p className="mt-2 text-xs text-[#89f6bf]">
                             {orderStatus}
                           </p>
                         )}
+                        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                          <Button
+                            variant="outline"
+                            disabled={environment !== "live" || !monitoredTrade}
+                            onClick={() => {
+                              setFlattenScope("selected");
+                              setFlattenConfirmOpen(true);
+                            }}
+                            className="border-rose-300/30 text-rose-200 hover:bg-rose-300/10"
+                          >
+                            Flatten {instrument.replace("_", "/")}
+                          </Button>
+                          <Button
+                            variant="outline"
+                            disabled={environment !== "live" || !openTrades.length}
+                            onClick={() => {
+                              setFlattenScope("all");
+                              setFlattenConfirmOpen(true);
+                            }}
+                            className="border-rose-300/30 text-rose-200 hover:bg-rose-300/10"
+                          >
+                            Flatten all trades
+                          </Button>
+                        </div>
                         {executionMode === "live" && (
                           <div className={(tradeReview?.drifted ? "border-rose-300/30 bg-rose-300/[.08]" : "border-[#a4ffcf]/15 bg-[#a4ffcf]/[.04]") + " mt-3 rounded-lg border p-3 text-xs leading-5"}>
                             <p className="font-medium text-white">

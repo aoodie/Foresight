@@ -90,6 +90,22 @@ export async function submitOandaMarketOrder(args: {
   return { orderId: payload.orderFillTransaction?.id ?? payload.orderCreateTransaction?.id ?? null, units: payload.orderFillTransaction?.units ?? String(args.units) };
 }
 
+export async function closeOandaTrade(args: { token: string; environment: OandaEnvironment; accountId: string; tradeId: string }) {
+  const host = hostFor(args.environment);
+  let response: Response;
+  try {
+    response = await fetch(`https://${host}/v3/accounts/${encodeURIComponent(args.accountId)}/trades/${encodeURIComponent(args.tradeId)}/close`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${args.token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ units: "ALL" }),
+      cache: "no-store",
+    });
+  } catch { throw new OandaApiError("OANDA could not be reached. Try again shortly.", 502); }
+  const payload = (await response.json().catch(() => ({}))) as { orderFillTransaction?: { id?: string; pl?: string }; errorMessage?: string };
+  if (!response.ok) throw new OandaApiError(payload.errorMessage || `OANDA could not close trade (${response.status}).`, response.status);
+  return { transactionId: payload.orderFillTransaction?.id ?? null, pnl: Number(payload.orderFillTransaction?.pl ?? 0) };
+}
+
 export async function fetchOandaAccountId(token: string, environment: OandaEnvironment) {
   const payload = await oandaJson<OandaAccountsPayload>(`https://${hostFor(environment)}/v3/accounts`, token);
   const accountId = payload.accounts?.find((account) => account.id)?.id;

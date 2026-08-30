@@ -55,6 +55,11 @@ export async function updateJournalEntry(input: { id: string; status?: string; p
     .bind(input.status ?? null, input.pnl ?? null, input.brokerTradeId ?? null, input.notes ?? null, input.closedAt ?? null, new Date().toISOString(), input.id).run();
 }
 
+export async function updateJournalByBrokerTradeId(input: { brokerTradeId: string; status: string; pnl?: number | null; notes?: string | null }) {
+  await runtime.DB.prepare("UPDATE trade_journal SET status = ?, pnl = COALESCE(?, pnl), notes = COALESCE(?, notes), closed_at = ?, updated_at = ? WHERE broker_trade_id = ?")
+    .bind(input.status, input.pnl ?? null, input.notes ?? null, new Date().toISOString(), new Date().toISOString(), input.brokerTradeId).run();
+}
+
 export async function writeSystemLog(input: {
   level?: "info" | "warning" | "error";
   category: string;
