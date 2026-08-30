@@ -22,6 +22,17 @@ export type ScannerResult = {
   invalidation: string;
   setup: string;
   updatedAt: string;
+  timeframeMode?: "scalping" | "intraday" | "swing";
+  timeframeAlignment?: Array<{ timeframe: string; bias: "long" | "short" | "neutral"; score: number }>;
+  confirmations?: number;
+};
+
+export type TimeframeMode = "scalping" | "intraday" | "swing";
+
+export const timeframeProfiles: Record<TimeframeMode, { context: string; setup: string; trigger: string; frames: string[] }> = {
+  scalping: { context: "H1", setup: "M15", trigger: "M5", frames: ["H1", "M15", "M5"] },
+  intraday: { context: "H4", setup: "H1", trigger: "M15", frames: ["H4", "H1", "M15"] },
+  swing: { context: "H4", setup: "H1", trigger: "M15", frames: ["H4", "H1", "M15"] },
 };
 
 function ema(values: number[], period: number) {
@@ -130,5 +141,35 @@ export function analyseInstrument(args: {
     invalidation,
     setup,
     updatedAt: candles.at(-1)!.time,
+  };
+}
+
+export function combineTimeframes(args: {
+  instrument: string;
+  label: string;
+  assetClass: "forex" | "metal" | "index";
+  mode: TimeframeMode;
+  analyses: Record<string, ScannerResult>;
+}): ScannerResult {
+  const profile = timeframeProfiles[args.mode];
+  const context = args.analyses[profile.context] ?? args.analyses[profile.frames[0]];
+  const alignment = profile.frames.map((timeframe) => ({ timeframe, bias: args.analyses[timeframe]?.bias ?? "neutral", score: args.analyses[timeframe]?.score ?? 0 }));
+  const directional = alignment.filter((item) => item.bias !== "neutral");
+  const longCount = directional.filter((item) => item.bias === "long").length;
+  const shortCount = directional.filter((item) => item.bias === "short").length;
+  const alignedBias = longCount >= 2 && longCount > shortCount ? "long" : shortCount >= 2 && shortCount > longCount ? "short" : "neutral";
+  const confirmations = alignedBias === "neutral" ? Math.max(longCount, shortCount) : alignment.filter((item) => item.bias === alignedBias).length;
+  const result = { ...context, bias: alignedBias as ScannerResult["bias"], score: Math.round(Math.min(95, context.score * 0.55 + confirmations / alignment.length * 45)), timeframeMode: args.mode, timeframeAlignment: alignment, confirmations };
+  const directionLabel = alignedBias === "long" ? "buying" : alignedBias === "short" ? "selling" : "mixed";
+  return {
+    ...result,
+    setup: alignedBias === "neutral" ? `Wait · ${profile.context} context and ${profile.trigger} entry are not aligned` : `${args.mode} · ${profile.context} context → ${profile.setup} setup → ${profile.trigger} trigger`,
+    analysis: alignedBias === "neutral" ? `The ${profile.context}, ${profile.setup} and ${profile.trigger} readings are mixed. Wait for the timeframes to agree before considering a trade.` : `${confirmations} of ${alignment.length} timeframes support ${directionLabel}. Use the ${profile.trigger} chart only for entry confirmation, not for changing the higher-timeframe direction.`,
+    reasons: [
+      `${profile.context} context: ${context.bias === "neutral" ? "mixed" : context.bias}.`,
+      `${profile.setup} setup: ${args.analyses[profile.setup]?.bias ?? "neutral"}.`,
+      `${profile.trigger} trigger: ${args.analyses[profile.trigger]?.bias ?? "neutral"}.`,
+      `${confirmations} of ${alignment.length} timeframes currently agree.`,
+    ],
   };
 }

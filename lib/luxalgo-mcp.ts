@@ -29,7 +29,10 @@ async function callLuxAlgo<T>(name: string, args: Record<string, unknown>): Prom
   return JSON.parse(toolText) as T;
 }
 
-const concepts = ["liquidity-sweep", "rsi", "atr-based-stop-distance"];
+// These are independent confirmation families. If a newer library does not
+// expose one of the optional concepts, the MCP call is safely ignored while
+// the core liquidity, momentum and volatility checks remain available.
+const concepts = ["price-action-concepts", "liquidity-sweep", "order-blocks", "imbalances", "support-resistance", "rsi", "atr-based-stop-distance"];
 
 export async function getLuxAlgoGrounding(): Promise<LuxAlgoGrounding[]> {
   const settled = await Promise.allSettled(concepts.map((slug) => callLuxAlgo<{
