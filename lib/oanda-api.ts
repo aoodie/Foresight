@@ -52,6 +52,31 @@ async function oandaJson<T>(url: string, token: string): Promise<T> {
   return payload;
 }
 
+export async function submitOandaMarketOrder(args: {
+  token: string; environment: OandaEnvironment; accountId: string; instrument: string;
+  units: number; stopLoss?: number | null; takeProfit?: number | null;
+}) {
+  const host = hostFor(args.environment);
+  const body = {
+    order: {
+      type: "MARKET", instrument: args.instrument, units: String(args.units),
+      timeInForce: "FOK", positionFill: "DEFAULT",
+      ...(args.stopLoss ? { stopLossOnFill: { price: args.stopLoss.toFixed(args.instrument.endsWith("JPY") ? 3 : 5), timeInForce: "GTC" } } : {}),
+      ...(args.takeProfit ? { takeProfitOnFill: { price: args.takeProfit.toFixed(args.instrument.endsWith("JPY") ? 3 : 5), timeInForce: "GTC" } } : {}),
+    },
+  };
+  let response: Response;
+  try {
+    response = await fetch(`https://${host}/v3/accounts/${encodeURIComponent(args.accountId)}/orders`, {
+      method: "POST", headers: { Authorization: `Bearer ${args.token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body), cache: "no-store",
+    });
+  } catch { throw new OandaApiError("OANDA could not be reached. Try again shortly.", 502); }
+  const payload = (await response.json().catch(() => ({}))) as { orderFillTransaction?: { id?: string; units?: string }; orderCreateTransaction?: { id?: string }; errorMessage?: string };
+  if (!response.ok) throw new OandaApiError(payload.errorMessage || `OANDA order failed (${response.status}).`, response.status);
+  return { orderId: payload.orderFillTransaction?.id ?? payload.orderCreateTransaction?.id ?? null, units: payload.orderFillTransaction?.units ?? String(args.units) };
+}
+
 export async function fetchOandaAccountId(token: string, environment: OandaEnvironment) {
   const payload = await oandaJson<OandaAccountsPayload>(`https://${hostFor(environment)}/v3/accounts`, token);
   const accountId = payload.accounts?.find((account) => account.id)?.id;
