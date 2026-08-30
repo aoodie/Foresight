@@ -1012,10 +1012,17 @@ export default function Home() {
                   <div className="mb-4 rounded-xl border border-rose-400/20 bg-rose-400/10 p-3 text-sm text-rose-200">
                     {aiError}{" "}
                     <button
-                      onClick={() => setSettingsOpen(true)}
+                      onClick={() =>
+                        aiConnected
+                          ? void generateAiStrategies(
+                              scanner.results,
+                              scanner.generatedAt,
+                            )
+                          : setSettingsOpen(true)
+                      }
                       className="ml-1 underline underline-offset-4"
                     >
-                      Open Settings
+                      {aiConnected ? "Try again" : "Open Settings"}
                     </button>
                   </div>
                 )}
