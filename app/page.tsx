@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
+import { usePathname, useSearchParams } from "next/navigation";
 import { AlertCircle, BrainCircuit, CalendarDays, CheckCircle2, CircleDot, Newspaper, RefreshCw, ScanSearch, Settings2, ShieldAlert, Sparkles, Wifi } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -58,7 +60,10 @@ function chartPoints(candles: Candle[]) {
 }
 
 export default function Home() {
-  const [instrument, setInstrument] = useState("EUR_USD");
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const requestedInstrument = searchParams.get("instrument");
+  const [instrument, setInstrument] = useState(instruments.some((item) => item.value === requestedInstrument) ? requestedInstrument! : "EUR_USD");
   const [granularity, setGranularity] = useState("H1");
   const [connection, setConnection] = useState<ConnectionState>("checking");
   const [environment, setEnvironment] = useState<"practice" | "live">("practice");
@@ -182,10 +187,10 @@ export default function Home() {
   }, [connection, refreshQuote]);
 
   useEffect(() => {
-    if (connection !== "connected" || scanRequested.current) return;
+    if (pathname !== "/" || connection !== "connected" || scanRequested.current) return;
     scanRequested.current = true;
     void runScanner();
-  }, [connection, runScanner]);
+  }, [connection, pathname, runScanner]);
 
   useEffect(() => {
     if (!aiConnected || !scanner?.results.length || aiLoading || aiSourceScan === scanner.generatedAt) return;
@@ -244,11 +249,20 @@ export default function Home() {
   const spreadPips = quote ? quote.spread * pipMultiplier(instrument) : null;
   const statusLabel = connection === "connected" ? "Live · " + environment : connection === "configured" ? "Connecting · " + environment : connection === "error" ? "Connection problem" : connection === "checking" ? "Checking OANDA" : "OANDA not connected";
   const topSetup = scanner?.results[0];
+  const isOverview = pathname === "/";
+  const isMarkets = pathname.startsWith("/markets");
+  const isResearch = pathname.startsWith("/research");
+  const pageTitle = isMarkets ? <>Study one market <em className="font-serif text-[#a4ffcf]">in depth.</em></> : isResearch ? <>News and events <em className="font-serif text-[#a4ffcf]">before the trade.</em></> : <>Find today’s best setups <em className="font-serif text-[#a4ffcf]">without the clutter.</em></>;
 
   return (
     <main className="min-h-screen bg-[#07100f] text-[#e8f3ee] selection:bg-[#a4ffcf] selection:text-[#07100f]">
-      <header className="mx-auto flex max-w-[1460px] items-center justify-between border-b border-white/10 px-5 py-5 lg:px-10">
+      <header className="mx-auto flex max-w-[1460px] flex-wrap items-center justify-between gap-4 border-b border-white/10 px-5 py-5 lg:px-10">
         <div className="flex items-center gap-3"><span className="grid h-9 w-9 place-items-center rounded-lg bg-[#a4ffcf] text-[#07100f]"><CircleDot size={19}/></span><div><p className="text-sm font-semibold tracking-[.18em]">FORESIGHT FX</p><p className="text-[10px] tracking-[.2em] text-[#8aa29a]">RESEARCH TERMINAL</p></div></div>
+        <nav className="order-3 flex w-full gap-1 rounded-xl border border-white/10 bg-black/15 p-1 sm:order-none sm:w-auto" aria-label="Primary navigation">
+          <NavLink href="/" active={isOverview}>Overview</NavLink>
+          <NavLink href="/markets" active={isMarkets}>Markets</NavLink>
+          <NavLink href="/research" active={isResearch}>News & events</NavLink>
+        </nav>
         <div className="flex items-center gap-2">
           <span className={(connection === "connected" ? "border-[#59dfa9]/30 bg-[#59dfa9]/10 text-[#89f6bf]" : connection === "error" ? "border-rose-400/30 bg-rose-400/10 text-rose-300" : "border-white/10 bg-white/5 text-[#a9bdb6]") + " hidden rounded-full border px-3 py-1 text-xs sm:block"}>{statusLabel}</span>
           <Button type="button" variant="ghost" size="icon" onClick={() => { setMessage(""); setSettingsOpen(true); }} aria-label="Open data and AI settings" className="h-10 w-10 text-[#e8f3ee] hover:bg-white/10"><Settings2 size={20}/></Button>
@@ -278,26 +292,26 @@ export default function Home() {
 
       <div className="mx-auto max-w-[1460px] px-5 py-8 lg:px-10">
         <section className="mb-7 flex flex-col justify-between gap-5 lg:flex-row lg:items-end">
-          <div><p className="mb-2 text-xs font-medium tracking-[.16em] text-[#8aa29a]">OANDA MARKET DATA / LIVE RESEARCH</p><h1 className="text-3xl font-medium tracking-tight sm:text-4xl">Read the market <em className="font-serif text-[#a4ffcf]">without guessing.</em></h1></div>
+          <div><p className="mb-2 text-xs font-medium tracking-[.16em] text-[#8aa29a]">OANDA DATA · LUXALGO RESEARCH · PLAIN ENGLISH</p><h1 className="text-3xl font-medium tracking-tight sm:text-4xl">{pageTitle}</h1></div>
           <div className="text-xs text-[#94a9a2]">{quote ? "Quote: " + new Date(quote.time).toLocaleTimeString("en-GB", { timeZone: "UTC" }) + " UTC · refreshes every 2s" : "Waiting for live OANDA pricing"}</div>
         </section>
 
         {message && !settingsOpen && <div className="mb-4 flex items-start gap-3 rounded-xl border border-rose-400/25 bg-rose-400/10 p-4 text-sm text-rose-200"><AlertCircle className="mt-0.5 shrink-0" size={18}/><div><p className="font-medium">OANDA connection failed</p><p className="mt-1 text-rose-200/80">{message}</p><button onClick={() => setSettingsOpen(true)} className="mt-2 underline underline-offset-4">Check connection settings</button></div></div>}
 
-        <section className="mb-5 overflow-hidden rounded-2xl border border-white/10 bg-[#0c1916]">
+        {isOverview && <><section className="mb-5 overflow-hidden rounded-2xl border border-white/10 bg-[#0c1916]">
           <div className="flex flex-col justify-between gap-4 border-b border-white/10 p-5 sm:flex-row sm:items-center">
             <div className="flex items-start gap-3"><span className="mt-0.5 grid h-9 w-9 place-items-center rounded-lg bg-[#a4ffcf]/10 text-[#a4ffcf]"><ScanSearch size={19}/></span><div><p className="text-xs tracking-[.14em] text-[#8aa29a]">DAILY OPPORTUNITY SCANNER</p><h2 className="mt-1 text-lg">10 forex pairs + XAU/USD + US30</h2><p className="mt-1 text-xs text-[#71887f]">Four-hour trend, buying and selling strength, normal price movement and today’s position</p></div></div>
             <Button onClick={runScanner} disabled={scanning || connection === "disconnected" || connection === "checking"} className="bg-[#a4ffcf] text-[#07100f] hover:bg-[#d0ffe1]"><RefreshCw className={scanning ? "animate-spin" : ""}/>{scanning ? "Scanning 12 markets…" : "Run daily scan"}</Button>
           </div>
 
           {scannerError && <div className="border-b border-rose-400/20 bg-rose-400/10 px-5 py-3 text-sm text-rose-200">{scannerError}</div>}
-          {topSetup && <button onClick={() => { setQuote(null); setInstrument(topSetup.instrument); }} className="w-full border-b border-white/10 bg-[#a4ffcf]/[.045] p-5 text-left"><div className="grid gap-4 lg:grid-cols-[.8fr_1.5fr]"><div><p className="text-[10px] tracking-[.14em] text-[#89f6bf]">TOP TECHNICAL CANDIDATE</p><p className="mt-1 text-2xl font-semibold">{topSetup.label}</p><div className="mt-2"><Bias bias={topSetup.bias}/><span className="ml-2 text-xs text-[#8aa29a]">Score {topSetup.score}/100</span></div></div><div><p className="text-sm leading-6 text-[#c0d1ca]">{topSetup.analysis}</p><p className="mt-1 text-xs text-[#81978f]">{topSetup.reasons.join(" · ")}</p></div></div></button>}
+          {topSetup && <button onClick={() => window.location.assign("/markets?instrument=" + topSetup.instrument)} className="w-full border-b border-white/10 bg-[#a4ffcf]/[.045] p-5 text-left"><div className="grid gap-4 lg:grid-cols-[.8fr_1.5fr]"><div><p className="text-[10px] tracking-[.14em] text-[#89f6bf]">TOP TECHNICAL CANDIDATE</p><p className="mt-1 text-2xl font-semibold">{topSetup.label}</p><div className="mt-2"><Bias bias={topSetup.bias}/><span className="ml-2 text-xs text-[#8aa29a]">Score {topSetup.score}/100</span></div></div><div><p className="text-sm leading-6 text-[#c0d1ca]">{topSetup.analysis}</p><p className="mt-1 text-xs text-[#81978f]">{topSetup.reasons.join(" · ")}</p><p className="mt-2 text-[11px] text-[#89f6bf]">Open detailed market study →</p></div></div></button>}
 
           <div className="overflow-x-auto">
             <table className="w-full min-w-[900px] text-left text-sm">
               <thead className="text-[10px] uppercase tracking-[.12em] text-[#71887f]"><tr><th className="px-5 py-3 font-medium">Rank</th><th className="px-3 py-3 font-medium">Market</th><th className="px-3 py-3 font-medium">Bias</th><th className="px-3 py-3 font-medium">Score</th><th className="px-3 py-3 font-medium">24h</th><th className="px-3 py-3 font-medium">RSI</th><th className="px-5 py-3 font-medium">Technical analysis and reasons</th></tr></thead>
               <tbody className="divide-y divide-white/[.06]">
-                {scanner?.results.map((result, index) => <tr key={result.instrument} onClick={() => { setQuote(null); setInstrument(result.instrument); }} className="cursor-pointer align-top transition-colors hover:bg-white/[.035]"><td className="px-5 py-4 text-[#71887f]">{index + 1}</td><td className="px-3 py-4 font-medium">{result.label}<span className="ml-2 text-[10px] uppercase text-[#71887f]">{result.assetClass}</span></td><td className="px-3 py-4"><Bias bias={result.bias}/></td><td className="px-3 py-4 font-mono">{result.score}</td><td className={(result.change24h >= 0 ? "text-[#59dfa9]" : "text-rose-400") + " px-3 py-4 font-mono"}>{result.change24h >= 0 ? "+" : ""}{result.change24h.toFixed(2)}%</td><td className="px-3 py-4 font-mono">{result.rsi.toFixed(0)}</td><td className="max-w-[520px] px-5 py-4"><p className="text-xs leading-5 text-[#c0d1ca]">{result.analysis}</p><ul className="mt-1 space-y-0.5 text-[11px] leading-4 text-[#81978f]">{result.reasons.map((reason) => <li key={reason}>• {reason}</li>)}</ul><p className="mt-1 text-[10px] text-amber-200/70">Invalidation: {result.invalidation}</p></td></tr>)}
+                {scanner?.results.map((result, index) => <tr key={result.instrument} onClick={() => window.location.assign("/markets?instrument=" + result.instrument)} className="cursor-pointer align-top transition-colors hover:bg-white/[.035]"><td className="px-5 py-4 text-[#71887f]">{index + 1}</td><td className="px-3 py-4 font-medium">{result.label}<span className="ml-2 text-[10px] uppercase text-[#71887f]">{result.assetClass}</span></td><td className="px-3 py-4"><Bias bias={result.bias}/></td><td className="px-3 py-4 font-mono">{result.score}</td><td className={(result.change24h >= 0 ? "text-[#59dfa9]" : "text-rose-400") + " px-3 py-4 font-mono"}>{result.change24h >= 0 ? "+" : ""}{result.change24h.toFixed(2)}%</td><td className="px-3 py-4 font-mono">{result.rsi.toFixed(0)}</td><td className="max-w-[520px] px-5 py-4"><p className="text-xs leading-5 text-[#c0d1ca]">{result.analysis}</p><ul className="mt-1 space-y-0.5 text-[11px] leading-4 text-[#81978f]">{result.reasons.map((reason) => <li key={reason}>• {reason}</li>)}</ul><p className="mt-1 text-[10px] text-amber-200/70">Invalidation: {result.invalidation}</p></td></tr>)}
                 {!scanner && <tr><td colSpan={7} className="px-5 py-10 text-center text-[#71887f]">{scanning ? "Reading four-hour price action across 12 markets…" : "Run the daily scan to rank today’s opportunities."}</td></tr>}
               </tbody>
             </table>
@@ -310,14 +324,14 @@ export default function Home() {
           {aiError && <div className="mb-4 rounded-xl border border-rose-400/20 bg-rose-400/10 p-3 text-sm text-rose-200">{aiError} <button onClick={() => setSettingsOpen(true)} className="ml-1 underline underline-offset-4">Open Settings</button></div>}
           <div className="grid gap-4 xl:grid-cols-3">{scanner.results.slice(0, 3).map((result, index) => { const plan = aiData?.strategies.find((item) => item.instrument === result.instrument); return <article key={result.instrument} className="rounded-2xl border border-white/10 bg-[#0c1916] p-5"><button onClick={() => { setQuote(null); setInstrument(result.instrument); }} className="w-full text-left"><div className="flex items-start justify-between"><div><p className="text-[10px] tracking-[.14em] text-[#71887f]">AI STRATEGY {index + 1}</p><h3 className="mt-1 text-xl font-semibold">{result.label}</h3><p className="mt-1 text-xs text-[#8aa29a]">{plan?.strategyName ?? "Awaiting AI analysis"}</p></div><div className="text-right"><Bias bias={plan?.verdict === "wait" || !plan ? "neutral" : plan.verdict}/><p className="mt-1 text-xs text-[#8aa29a]">{plan ? `${plan.confidence}% confidence` : `${result.score}/100 technical`}</p></div></div></button>{plan ? <><p className="mt-4 min-h-12 text-sm leading-6 text-[#b8cac3]">{plan.analysis}</p><div className="mt-3 flex flex-wrap gap-1.5">{plan.methodology.map((method) => <span key={method} className="rounded-full border border-[#a4ffcf]/15 bg-[#a4ffcf]/[.06] px-2 py-1 text-[10px] text-[#89f6bf]">LuxAlgo · {method}</span>)}</div><div className="mt-4 grid grid-cols-2 gap-2"><PlanLevel label={`${plan.entryType} entry`} value={formatScannerPrice(result.instrument, plan.entry)}/><PlanLevel label="AI stop loss" value={formatScannerPrice(result.instrument, plan.stopLoss)} tone="risk"/><PlanLevel label={`AI TP1${plan.riskReward1 ? ` · ${plan.riskReward1.toFixed(1)}R` : ""}`} value={formatScannerPrice(result.instrument, plan.takeProfit1)} tone="reward"/><PlanLevel label={`AI TP2${plan.riskReward2 ? ` · ${plan.riskReward2.toFixed(1)}R` : ""}`} value={formatScannerPrice(result.instrument, plan.takeProfit2)} tone="reward"/></div><p className="mt-3 text-xs leading-5 text-[#a9bdb6]"><span className="text-[#89f6bf]">Trigger:</span> {plan.trigger}</p><ul className="mt-3 space-y-1 text-xs leading-5 text-[#81978f]">{plan.reasons.map((reason) => <li key={reason}>• {reason}</li>)}</ul><p className="mt-3 text-[11px] leading-4 text-rose-200/75">Invalidation: {plan.invalidation}</p><div className="mt-4 flex items-start gap-2 rounded-lg border border-amber-300/10 bg-amber-300/[.05] p-3 text-[11px] leading-4 text-amber-100/70"><ShieldAlert className="mt-0.5 shrink-0" size={14}/><span>{plan.eventRisk}</span></div></> : <div className="mt-4 grid min-h-64 place-items-center rounded-xl border border-dashed border-white/10 p-6 text-center"><div><BrainCircuit className="mx-auto text-[#71887f]"/><p className="mt-3 text-sm text-[#a9bdb6]">{aiLoading ? "LuxAlgo MCP and the LLM are designing entry, stop and targets…" : "Add an OpenAI API key in Settings to generate this strategy."}</p></div></div>}</article>; })}</div>
           {aiData && <div className="mt-3 flex flex-col justify-between gap-2 text-[11px] text-[#71887f] sm:flex-row"><p>Generated {new Date(aiData.generatedAt).toLocaleString("en-GB", { timeZone: "UTC" })} UTC with {aiData.model}. Refreshing the technical scan regenerates these plans.</p><p>Grounded by {aiData.luxAlgoSources.map((source, index) => <span key={source.slug}>{index ? " · " : ""}<a href={source.url} target="_blank" rel="noreferrer" className="text-[#89f6bf] underline-offset-4 hover:underline">{source.name}</a></span>)}</p></div>}
-        </section> : null}
+        </section> : null}</>}
 
-        <section className="mb-5 grid gap-4 xl:grid-cols-2">
+        {isResearch && <><div className="mb-5 flex flex-col justify-between gap-3 rounded-2xl border border-white/10 bg-[#0c1916] p-5 sm:flex-row sm:items-center"><div><p className="text-xs tracking-[.14em] text-[#8aa29a]">SELECT MARKET</p><p className="mt-1 text-sm text-[#a9bdb6]">Choose a pair to filter the headline feed.</p></div><Select value={instrument} onValueChange={(value) => setInstrument(value)}><SelectTrigger className="w-full border-white/10 bg-[#10221d] text-white sm:w-56"><SelectValue/></SelectTrigger><SelectContent>{instruments.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></div><section className="mb-5 grid gap-4 xl:grid-cols-2">
           <div className="overflow-hidden rounded-2xl border border-white/10 bg-[#0c1916]"><div className="flex items-start gap-3 border-b border-white/10 p-5"><span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-[#a4ffcf]/10 text-[#a4ffcf]"><Newspaper size={18}/></span><div><p className="text-xs tracking-[.14em] text-[#8aa29a]">PAIR NEWS</p><h2 className="mt-1 text-lg">{instrument.replace("_", " / ")} related headlines</h2><p className="mt-1 text-xs text-[#71887f]">Changes automatically when you select a scanner result</p></div></div><PairNews instrument={instrument}/></div>
           <div className="overflow-hidden rounded-2xl border border-white/10 bg-[#0c1916]"><div className="flex items-start gap-3 border-b border-white/10 p-5"><span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-amber-300/10 text-amber-200"><CalendarDays size={18}/></span><div><p className="text-xs tracking-[.14em] text-[#8aa29a]">ECONOMIC EVENT RISK</p><h2 className="mt-1 text-lg">Scanner currency calendar</h2><p className="mt-1 text-xs text-[#71887f]">US, Eurozone, UK, Japan, Switzerland, Canada, Australia and New Zealand</p></div></div><EconomicCalendar/></div>
-        </section>
+        </section></>}
 
-        <section className="grid gap-4 xl:grid-cols-[1.65fr_.95fr]">
+        {isMarkets && <><section className="grid gap-4 xl:grid-cols-[1.65fr_.95fr]">
           <div className="rounded-2xl border border-white/10 bg-[#0c1916] p-4 sm:p-6">
             <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
               <div><p className="text-xs tracking-[.14em] text-[#8aa29a]">ACTIVE STUDY</p><h2 className="mt-1 text-xl font-medium">{instrument.replace("_", " / ")} <span className="text-sm font-normal text-[#8aa29a]">— live quote + midpoint candles</span></h2></div>
@@ -353,7 +367,7 @@ export default function Home() {
           <p className="mt-3 text-[11px] leading-5 text-[#71887f]">Charting and indicator data are supplied by TradingView and may differ slightly from the OANDA account quote shown above.</p>
         </section>
 
-        <section className="mt-5 rounded-2xl border border-white/10 bg-[#0c1916] p-5"><p className="text-xs tracking-[.14em] text-[#8aa29a]">RESEARCH QUEUE</p><h2 className="mt-1 text-lg">Core markets</h2><div className="mt-4 grid gap-x-8 md:grid-cols-2">{instruments.map((item) => <button key={item.value} onClick={() => { setQuote(null); setInstrument(item.value); }} className="flex items-center justify-between border-b border-white/8 py-3 text-left"><div><p className="font-medium">{item.label}</p><p className="mt-0.5 text-xs text-[#81978f]">{item.note}</p></div><span className={instrument === item.value ? "text-xs text-[#89f6bf]" : "text-xs text-[#71887f]"}>{instrument === item.value ? "Selected" : "Open study"}</span></button>)}</div></section>
+        <section className="mt-5 rounded-2xl border border-white/10 bg-[#0c1916] p-5"><p className="text-xs tracking-[.14em] text-[#8aa29a]">MARKET LIST</p><h2 className="mt-1 text-lg">Choose another market</h2><div className="mt-4 grid gap-x-8 md:grid-cols-2">{instruments.map((item) => <button key={item.value} onClick={() => { setQuote(null); setInstrument(item.value); }} className="flex items-center justify-between border-b border-white/8 py-3 text-left"><div><p className="font-medium">{item.label}</p><p className="mt-0.5 text-xs text-[#81978f]">{item.note}</p></div><span className={instrument === item.value ? "text-xs text-[#89f6bf]" : "text-xs text-[#71887f]"}>{instrument === item.value ? "Selected" : "Open study"}</span></button>)}</div></section></>}
         <p className="mt-6 text-xs leading-5 text-[#71887f]">For research and education only. This interface does not execute trades or provide investment advice.</p>
       </div>
     </main>
@@ -365,3 +379,4 @@ function Row({ label, value }: { label: string; value: string }) { return <div c
 function Bias({ bias }: { bias: "long" | "short" | "neutral" }) { return <span className={(bias === "long" ? "bg-[#59dfa9]/10 text-[#89f6bf]" : bias === "short" ? "bg-rose-400/10 text-rose-300" : "bg-amber-400/10 text-amber-300") + " inline-flex rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[.1em]"}>{bias}</span>; }
 function PlanLevel({ label, value, tone }: { label: string; value: string; tone?: "risk" | "reward" }) { return <div className="rounded-md bg-black/20 p-2"><p className="text-[9px] uppercase tracking-[.1em] text-[#71887f]">{label}</p><p className={(tone === "risk" ? "text-rose-300" : tone === "reward" ? "text-[#89f6bf]" : "text-white") + " mt-0.5 font-mono"}>{value}</p></div>; }
 function StatusDot({ connected }: { connected: boolean }) { return <span className={(connected ? "bg-[#59dfa9]/10 text-[#89f6bf]" : "bg-white/5 text-[#81978f]") + " rounded-full px-2.5 py-1 text-[10px] uppercase tracking-[.1em]"}>{connected ? "Connected" : "Not connected"}</span>; }
+function NavLink({ href, active, children }: { href: string; active: boolean; children: React.ReactNode }) { return <Link href={href} className={(active ? "bg-[#a4ffcf] text-[#07100f]" : "text-[#a9bdb6] hover:bg-white/[.06] hover:text-white") + " flex-1 rounded-lg px-3 py-2 text-center text-xs font-medium transition-colors sm:flex-none"}>{children}</Link>; }
