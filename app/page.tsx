@@ -5,6 +5,7 @@ import { AlertCircle, CheckCircle2, CircleDot, RefreshCw, Settings2, Wifi } from
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { TradingViewChart } from "@/components/tradingview-chart";
 
 type Candle = { time: string; open: number; high: number; low: number; close: number; complete: boolean };
 type MarketData = { candles: Candle[]; price: number; changePercent: number; lastUpdated: string; environment: "practice" | "live" };
@@ -200,6 +201,15 @@ export default function Home() {
             <Button onClick={() => { void Promise.all([refreshCandles(), refreshQuote()]); }} disabled={loading || connection === "disconnected" || connection === "checking"} className="mt-7 w-full bg-[#a4ffcf] text-[#07100f] hover:bg-[#d0ffe1]"><RefreshCw className={loading ? "animate-spin" : ""}/>{loading ? "Refreshing…" : "Refresh now"}</Button>
             {(connection === "disconnected" || connection === "error") && <Button variant="ghost" onClick={() => { setMessage(""); setSettingsOpen(true); }} className="mt-2 w-full text-[#a4ffcf]">Open connection settings</Button>}
           </aside>
+        </section>
+
+        <section className="mt-5 rounded-2xl border border-white/10 bg-[#0c1916] p-4 sm:p-6">
+          <div className="mb-5 flex flex-col justify-between gap-3 sm:flex-row sm:items-end">
+            <div><p className="text-xs tracking-[.14em] text-[#8aa29a]">INTERACTIVE ANALYSIS</p><h2 className="mt-1 text-lg">TradingView Advanced Chart</h2></div>
+            <div className="text-xs text-[#81978f]">{instrument.replace("_", " / ")} · {granularity} · TradingView indicators and drawing tools</div>
+          </div>
+          <TradingViewChart instrument={instrument} granularity={granularity}/>
+          <p className="mt-3 text-[11px] leading-5 text-[#71887f]">Charting and indicator data are supplied by TradingView and may differ slightly from the OANDA account quote shown above.</p>
         </section>
 
         <section className="mt-5 rounded-2xl border border-white/10 bg-[#0c1916] p-5"><p className="text-xs tracking-[.14em] text-[#8aa29a]">RESEARCH QUEUE</p><h2 className="mt-1 text-lg">Core markets</h2><div className="mt-4 grid gap-x-8 md:grid-cols-2">{instruments.map((item) => <button key={item.value} onClick={() => { setQuote(null); setInstrument(item.value); }} className="flex items-center justify-between border-b border-white/8 py-3 text-left"><div><p className="font-medium">{item.label}</p><p className="mt-0.5 text-xs text-[#81978f]">{item.note}</p></div><span className={instrument === item.value ? "text-xs text-[#89f6bf]" : "text-xs text-[#71887f]"}>{instrument === item.value ? "Selected" : "Open study"}</span></button>)}</div></section>
