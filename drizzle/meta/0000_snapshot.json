@@ -1,0 +1,27 @@
+{
+  "version": "6",
+  "dialect": "sqlite",
+  "id": "9064c489-c001-4cee-92ab-c3f4463b887a",
+  "prevId": "00000000-0000-0000-0000-000000000000",
+  "tables": {
+    "oanda_connection": {
+      "name": "oanda_connection",
+      "columns": {
+        "id": { "name": "id", "type": "text", "primaryKey": true, "notNull": true, "autoincrement": false },
+        "environment": { "name": "environment", "type": "text", "primaryKey": false, "notNull": true, "autoincrement": false, "default": "'practice'" },
+        "token_ciphertext": { "name": "token_ciphertext", "type": "text", "primaryKey": false, "notNull": true, "autoincrement": false },
+        "token_iv": { "name": "token_iv", "type": "text", "primaryKey": false, "notNull": true, "autoincrement": false },
+        "updated_at": { "name": "updated_at", "type": "text", "primaryKey": false, "notNull": true, "autoincrement": false }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    }
+  },
+  "views": {},
+  "enums": {},
+  "_meta": { "schemas": {}, "tables": {}, "columns": {} },
+  "internal": { "indexes": {} }
+}
