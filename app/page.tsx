@@ -1911,6 +1911,19 @@ export default function Home() {
               <TradingViewChart
                 instrument={instrument}
                 granularity={granularity}
+                levels={
+                  marketSetup
+                    ? {
+                        entry: marketAiPlan?.entry ?? marketSetup.entry,
+                        stopLoss:
+                          marketAiPlan?.stopLoss ?? marketSetup.stopLoss,
+                        takeProfit1:
+                          marketAiPlan?.takeProfit1 ?? marketSetup.takeProfit1,
+                        takeProfit2:
+                          marketAiPlan?.takeProfit2 ?? marketSetup.takeProfit2,
+                      }
+                    : undefined
+                }
               />
               <p className="mt-3 text-[11px] leading-5 text-[#71887f]">
                 Charting and indicator data are supplied by TradingView and may

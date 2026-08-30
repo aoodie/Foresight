@@ -27,9 +27,16 @@ const intervals: Record<string, string> = {
 export function TradingViewChart({
   instrument,
   granularity,
+  levels,
 }: {
   instrument: string;
   granularity: string;
+  levels?: {
+    entry?: number | null;
+    stopLoss?: number | null;
+    takeProfit1?: number | null;
+    takeProfit2?: number | null;
+  };
 }) {
   const container = useRef<HTMLDivElement>(null);
   const symbol = symbols[instrument] ?? symbols.EUR_USD;
@@ -70,12 +77,42 @@ export function TradingViewChart({
     return () => current.replaceChildren();
   }, [symbol, granularity]);
 
+  const decimals = instrument.endsWith("JPY")
+    ? 3
+    : instrument === "XAU_USD"
+      ? 2
+      : instrument === "US30_USD"
+        ? 1
+        : 5;
+  const format = (value?: number | null) =>
+    value == null ? "—" : value.toFixed(decimals);
   return (
-    <div className="h-[560px] overflow-hidden rounded-xl border border-white/5 bg-[#0c1916]">
-      <div
-        ref={container}
-        className="tradingview-widget-container h-full w-full"
-      />
+    <div className="overflow-hidden rounded-xl border border-white/5 bg-[#0c1916]">
+      {levels && (
+        <div className="flex flex-wrap gap-2 border-b border-white/10 px-3 py-2 text-[11px]">
+          <span className="rounded bg-[#a4ffcf]/10 px-2 py-1 text-[#89f6bf]">
+            Entry {format(levels.entry)}
+          </span>
+          <span className="rounded bg-rose-400/10 px-2 py-1 text-rose-200">
+            SL {format(levels.stopLoss)}
+          </span>
+          <span className="rounded bg-sky-400/10 px-2 py-1 text-sky-200">
+            TP1 {format(levels.takeProfit1)}
+          </span>
+          <span className="rounded bg-violet-400/10 px-2 py-1 text-violet-200">
+            TP2 {format(levels.takeProfit2)}
+          </span>
+          <span className="ml-auto text-[#71887f]">
+            Plan levels · refresh with selected analysis
+          </span>
+        </div>
+      )}
+      <div className="h-[560px]">
+        <div
+          ref={container}
+          className="tradingview-widget-container h-full w-full"
+        />
+      </div>
     </div>
   );
 }
