@@ -61,3 +61,34 @@ export const systemLogs = sqliteTable("system_logs", {
   durationMs: integer("duration_ms"),
   detailsJson: text("details_json"),
 });
+
+// Append-only record of every actual OpenAI decision. Cache hits point back to
+// one of these records so the original prompt, evidence and output remain
+// auditable without charging for a second generation.
+export const aiDecisionLedger = sqliteTable("ai_decision_ledger", {
+  id: text("id").primaryKey(),
+  cacheKey: text("cache_key").notNull(),
+  decisionType: text("decision_type").notNull(),
+  subjectKey: text("subject_key").notNull(),
+  provider: text("provider").notNull().default("openai"),
+  model: text("model").notNull(),
+  instructions: text("instructions").notNull(),
+  inputJson: text("input_json").notNull(),
+  outputJson: text("output_json").notNull(),
+  validationJson: text("validation_json"),
+  responseId: text("response_id"),
+  usageJson: text("usage_json"),
+  trigger: text("trigger").notNull(),
+  createdAt: text("created_at").notNull(),
+});
+
+export const aiDecisionCache = sqliteTable("ai_decision_cache", {
+  cacheKey: text("cache_key").primaryKey(),
+  ledgerId: text("ledger_id").notNull(),
+  decisionType: text("decision_type").notNull(),
+  subjectKey: text("subject_key").notNull(),
+  createdAt: text("created_at").notNull(),
+  lastUsedAt: text("last_used_at").notNull(),
+  expiresAt: text("expires_at").notNull(),
+  hitCount: integer("hit_count").notNull().default(0),
+});

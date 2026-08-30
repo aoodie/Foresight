@@ -88,6 +88,9 @@ type TradeReview = {
   explanation: string;
   recommendedAction: string;
   reviewedAt: string;
+  lastFetchedAt?: string;
+  cacheHit?: boolean;
+  decisionId?: string;
   reviewReason?: "high_impact_news_released" | "price_move";
 };
 type HighImpactEvent = {
@@ -189,6 +192,11 @@ type AiStrategy = {
 type AiStrategyData = {
   model: string;
   generatedAt: string;
+  lastFetchedAt?: string;
+  mode?: "scalping" | "intraday" | "swing";
+  cacheHit?: boolean;
+  decisionId?: string;
+  usage?: Record<string, unknown> | null;
   strategies: AiStrategy[];
   luxAlgoSources: Array<{
     slug: string;
@@ -344,7 +352,6 @@ export default function Home() {
 
   const generateAiStrategies = useCallback(
     async (markets: ScanResult[], sourceScan: string, force = false) => {
-      void force;
       setAiLoading(true);
       setAiError("");
       setAiSourceScan(sourceScan);
@@ -355,6 +362,7 @@ export default function Home() {
           body: JSON.stringify({
             markets: markets.slice(0, 3),
             mode: scanner?.mode ?? scanMode,
+            force,
           }),
         });
         const payload = await response.json();
@@ -381,7 +389,7 @@ export default function Home() {
 
   const aiNeedsRefresh = useCallback(
     (markets: ScanResult[]) => {
-      if (!aiData || !markets.length) return true;
+      if (!aiData || !markets.length || (aiData.mode && aiData.mode !== scanMode)) return true;
       return markets.some((market) => {
         const previous = aiPriceSnapshot[market.instrument];
         if (!previous) return true;
@@ -393,7 +401,7 @@ export default function Home() {
         return move >= meaningfulMove;
       });
     },
-    [aiData, aiPriceSnapshot],
+    [aiData, aiPriceSnapshot, scanMode],
   );
 
   const runScanner = useCallback(async () => {
@@ -428,7 +436,7 @@ export default function Home() {
           ? payload.unavailable
           : [],
       });
-      setAiData(null);
+      setAiData((previous) => previous?.mode === scanMode ? previous : null);
       setAiSourceScan("");
     } catch (error) {
       setScannerError(
@@ -1544,13 +1552,13 @@ export default function Home() {
                 {aiData && (
                   <div className="mt-3 flex flex-col justify-between gap-2 text-[11px] text-[#71887f] sm:flex-row">
                     <p>
-                      Generated{" "}
-                      {new Date(aiData.generatedAt).toLocaleString("en-GB", {
+                      {aiData.cacheHit ? "Reused captured analysis" : "Fetched new analysis"}{" "}
+                      {new Date(aiData.lastFetchedAt ?? aiData.generatedAt).toLocaleString("en-GB", {
                         timeZone: "UTC",
                       })}{" "}
-                      UTC with {aiData.model}. Plans are reused while price
-                      movement remains insignificant; use Regenerate for a
-                      manual refresh.
+                      UTC with {aiData.model}. No new LLM call is made unless
+                      price or strategy evidence changes materially; use
+                      Regenerate for a deliberate manual refresh.
                     </p>
                     <p>
                       Grounded by{" "}
@@ -2098,6 +2106,7 @@ export default function Home() {
                                   {tradeReview ? `${tradeReview.decision.toUpperCase()}: ${tradeReview.explanation}` : monitorStatus || "Rule monitor is checking for a meaningful strategy change."}
                                 </p>
                                 {tradeReview && <p className="mt-1 text-[#c7d2cc]">{tradeReview.reviewReason === "high_impact_news_released" ? "Post-news sentiment" : "Current trade sentiment"}: {tradeReview.sentiment} · confidence {tradeReview.confidence}%</p>}
+                                {tradeReview && <p className="mt-1 text-[10px] text-[#71887f]">{tradeReview.cacheHit ? "Captured review reused" : "New review fetched"} · {new Date(tradeReview.lastFetchedAt ?? tradeReview.reviewedAt).toLocaleString("en-GB", { timeZone: "UTC" })} UTC</p>}
                                 {tradeReview?.drifted && <p className="mt-1 text-rose-200">Recommended action: {tradeReview.recommendedAction}</p>}
                                 <p className="mt-1 text-[10px] text-[#71887f]">
                                   Live P&amp;L refreshes with OANDA trade polling. Rule checks poll every 5 seconds. After a high-impact release, the LLM reviews event sentiment and whether to hold or close; it never closes or changes an order automatically.
