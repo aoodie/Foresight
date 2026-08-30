@@ -301,6 +301,7 @@ export default function Home() {
   const [scanning, setScanning] = useState(false);
   const [scannerError, setScannerError] = useState("");
   const [aiKey, setAiKey] = useState("");
+  const [aiModel, setAiModel] = useState("gpt-5.5");
   const [aiConnected, setAiConnected] = useState(false);
   const [aiSaving, setAiSaving] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
@@ -572,7 +573,10 @@ export default function Home() {
     fetch("/api/ai/connection", { cache: "no-store" })
       .then(async (response) => ({ response, payload: await response.json() }))
       .then(({ response, payload }) => {
-        if (active) setAiConnected(Boolean(response.ok && payload.connected));
+        if (active) {
+          setAiConnected(Boolean(response.ok && payload.connected));
+          if (typeof payload.model === "string") setAiModel(payload.model);
+        }
       })
       .catch(() => {
         if (active) setAiConnected(false);
@@ -689,13 +693,17 @@ export default function Home() {
       const response = await fetch("/api/ai/connection", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKey: aiKey }),
+        body: JSON.stringify({ apiKey: aiKey || undefined, model: aiModel.trim() }),
       });
       const payload = await response.json();
       if (!response.ok)
         throw new Error(payload.error || "OpenAI rejected this API key.");
       setAiKey("");
       setAiConnected(true);
+      if (typeof payload.model === "string") setAiModel(payload.model);
+      setAiData(null);
+      setAiSourceScan("");
+      setAiPriceSnapshot({});
     } catch (error) {
       setAiConnected(false);
       setAiError(
@@ -1045,11 +1053,34 @@ export default function Home() {
                   OpenAI strategy analysis
                 </p>
                 <p className="mt-1 text-xs text-[#81978f]">
-                  Uses GPT-5.5 Structured Outputs for the top three daily cards.
+                  Choose the model used for strategy cards and live-trade reviews.
+                  Previous model decisions remain preserved in the ledger.
                 </p>
               </div>
               <StatusDot connected={aiConnected} />
             </div>
+            <label className="mt-2 text-sm text-[#a9bdb6]">
+              OpenAI model ID
+            </label>
+            <input
+              value={aiModel}
+              onChange={(event) => setAiModel(event.target.value)}
+              type="text"
+              autoComplete="off"
+              list="foresight-model-options"
+              placeholder="e.g. gpt-5.5"
+              className="h-10 rounded-md border border-white/10 bg-[#10221d] px-3 text-sm outline-none focus:border-[#a4ffcf]"
+            />
+            <datalist id="foresight-model-options">
+              <option value="gpt-5.5" />
+              <option value="gpt-5" />
+              <option value="gpt-5-mini" />
+              <option value="gpt-4.1" />
+              <option value="gpt-4.1-mini" />
+            </datalist>
+            <p className="text-[11px] text-[#71887f]">
+              Enter any model ID available to your API key. It is checked before saving.
+            </p>
             <label className="mt-2 text-sm text-[#a9bdb6]">
               OpenAI API key
             </label>
@@ -1073,9 +1104,9 @@ export default function Home() {
               <Sparkles className={aiSaving ? "animate-spin" : ""} />
               {aiSaving
                 ? "Validating…"
-                : aiConnected
-                  ? "Replace AI key"
-                  : "Validate and save AI key"}
+                : aiKey
+                  ? aiConnected ? "Save model & replace key" : "Validate and save AI settings"
+                  : "Save model"}
             </Button>
             {aiError && <p className="text-xs text-rose-300">{aiError}</p>}
           </div>
