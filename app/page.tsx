@@ -233,7 +233,36 @@ export default function Home() {
   const [aiPriceSnapshot, setAiPriceSnapshot] = useState<
     Record<string, number>
   >({});
+  const [aiHydrated, setAiHydrated] = useState(false);
   const scanRequested = useRef(false);
+
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem("forex-research-ai-analysis");
+      if (saved) {
+        const parsed = JSON.parse(saved) as {
+          data?: AiStrategyData;
+          prices?: Record<string, number>;
+        };
+        if (parsed.data?.strategies?.length)
+          window.setTimeout(() => setAiData(parsed.data!), 0);
+        if (parsed.prices)
+          window.setTimeout(() => setAiPriceSnapshot(parsed.prices!), 0);
+      }
+    } catch {
+      // Ignore stale local analysis and fetch when needed.
+    } finally {
+      setAiHydrated(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!aiHydrated || !aiData) return;
+    window.localStorage.setItem(
+      "forex-research-ai-analysis",
+      JSON.stringify({ data: aiData, prices: aiPriceSnapshot }),
+    );
+  }, [aiData, aiHydrated, aiPriceSnapshot]);
 
   const generateAiStrategies = useCallback(
     async (markets: ScanResult[], sourceScan: string, force = false) => {
@@ -450,6 +479,7 @@ export default function Home() {
 
   useEffect(() => {
     if (
+      !aiHydrated ||
       !aiConnected ||
       !scanner?.results.length ||
       aiLoading ||
@@ -463,6 +493,7 @@ export default function Home() {
     return () => window.clearTimeout(timer);
   }, [
     aiConnected,
+    aiHydrated,
     aiLoading,
     aiNeedsRefresh,
     aiSourceScan,
@@ -1065,133 +1096,140 @@ export default function Home() {
                   </div>
                 )}
                 <div className="grid gap-4 xl:grid-cols-3">
-                  {scanner.results.slice(0, 3).map((result, index) => {
-                    const plan = aiData?.strategies.find(
-                      (item) => item.instrument === result.instrument,
-                    );
-                    return (
-                      <article
-                        key={result.instrument}
-                        className="rounded-2xl border border-white/10 bg-[#0c1916] p-5"
-                      >
-                        <button
-                          onClick={() => {
-                            setQuote(null);
-                            setInstrument(result.instrument);
-                          }}
-                          className="w-full text-left"
+                  {scanner.results
+                    .filter(
+                      (result) =>
+                        result.score >=
+                        Math.max(70, (scanner.results[0]?.score ?? 0) - 15),
+                    )
+                    .slice(0, 3)
+                    .map((result, index) => {
+                      const plan = aiData?.strategies.find(
+                        (item) => item.instrument === result.instrument,
+                      );
+                      return (
+                        <article
+                          key={result.instrument}
+                          className="rounded-2xl border border-white/10 bg-[#0c1916] p-5"
                         >
-                          <div className="flex items-start justify-between">
-                            <div>
-                              <p className="text-[10px] tracking-[.14em] text-[#71887f]">
-                                AI STRATEGY {index + 1}
+                          <button
+                            onClick={() => {
+                              setQuote(null);
+                              setInstrument(result.instrument);
+                            }}
+                            className="w-full text-left"
+                          >
+                            <div className="flex items-start justify-between">
+                              <div>
+                                <p className="text-[10px] tracking-[.14em] text-[#71887f]">
+                                  AI STRATEGY {index + 1}
+                                </p>
+                                <h3 className="mt-1 text-xl font-semibold">
+                                  {result.label}
+                                </h3>
+                                <p className="mt-1 text-xs text-[#8aa29a]">
+                                  {plan?.strategyName ?? "Awaiting AI analysis"}
+                                </p>
+                              </div>
+                              <div className="text-right">
+                                <Bias
+                                  bias={
+                                    plan?.verdict === "wait" || !plan
+                                      ? "neutral"
+                                      : plan.verdict
+                                  }
+                                />
+                                <p className="mt-1 text-xs text-[#8aa29a]">
+                                  {plan
+                                    ? `${plan.confidence}% confidence`
+                                    : `${result.score}/100 technical`}
+                                </p>
+                              </div>
+                            </div>
+                          </button>
+                          {plan ? (
+                            <>
+                              <p className="mt-4 min-h-12 text-sm leading-6 text-[#b8cac3]">
+                                {plan.analysis}
                               </p>
-                              <h3 className="mt-1 text-xl font-semibold">
-                                {result.label}
-                              </h3>
-                              <p className="mt-1 text-xs text-[#8aa29a]">
-                                {plan?.strategyName ?? "Awaiting AI analysis"}
+                              <div className="mt-3 flex flex-wrap gap-1.5">
+                                {plan.methodology.map((method) => (
+                                  <span
+                                    key={method}
+                                    className="rounded-full border border-[#a4ffcf]/15 bg-[#a4ffcf]/[.06] px-2 py-1 text-[10px] text-[#89f6bf]"
+                                  >
+                                    LuxAlgo · {method}
+                                  </span>
+                                ))}
+                              </div>
+                              <div className="mt-4 grid grid-cols-2 gap-2">
+                                <PlanLevel
+                                  label={`${plan.entryType} entry`}
+                                  value={formatScannerPrice(
+                                    result.instrument,
+                                    plan.entry,
+                                  )}
+                                />
+                                <PlanLevel
+                                  label="AI stop loss"
+                                  value={formatScannerPrice(
+                                    result.instrument,
+                                    plan.stopLoss,
+                                  )}
+                                  tone="risk"
+                                />
+                                <PlanLevel
+                                  label={`AI TP1${plan.riskReward1 ? ` · ${plan.riskReward1.toFixed(1)}R` : ""}`}
+                                  value={formatScannerPrice(
+                                    result.instrument,
+                                    plan.takeProfit1,
+                                  )}
+                                  tone="reward"
+                                />
+                                <PlanLevel
+                                  label={`AI TP2${plan.riskReward2 ? ` · ${plan.riskReward2.toFixed(1)}R` : ""}`}
+                                  value={formatScannerPrice(
+                                    result.instrument,
+                                    plan.takeProfit2,
+                                  )}
+                                  tone="reward"
+                                />
+                              </div>
+                              <p className="mt-3 text-xs leading-5 text-[#a9bdb6]">
+                                <span className="text-[#89f6bf]">Trigger:</span>{" "}
+                                {plan.trigger}
                               </p>
-                            </div>
-                            <div className="text-right">
-                              <Bias
-                                bias={
-                                  plan?.verdict === "wait" || !plan
-                                    ? "neutral"
-                                    : plan.verdict
-                                }
-                              />
-                              <p className="mt-1 text-xs text-[#8aa29a]">
-                                {plan
-                                  ? `${plan.confidence}% confidence`
-                                  : `${result.score}/100 technical`}
+                              <ul className="mt-3 space-y-1 text-xs leading-5 text-[#81978f]">
+                                {plan.reasons.map((reason) => (
+                                  <li key={reason}>• {reason}</li>
+                                ))}
+                              </ul>
+                              <p className="mt-3 text-[11px] leading-4 text-rose-200/75">
+                                Invalidation: {plan.invalidation}
                               </p>
+                              <div className="mt-4 flex items-start gap-2 rounded-lg border border-amber-300/10 bg-amber-300/[.05] p-3 text-[11px] leading-4 text-amber-100/70">
+                                <ShieldAlert
+                                  className="mt-0.5 shrink-0"
+                                  size={14}
+                                />
+                                <span>{plan.eventRisk}</span>
+                              </div>
+                            </>
+                          ) : (
+                            <div className="mt-4 grid min-h-64 place-items-center rounded-xl border border-dashed border-white/10 p-6 text-center">
+                              <div>
+                                <BrainCircuit className="mx-auto text-[#71887f]" />
+                                <p className="mt-3 text-sm text-[#a9bdb6]">
+                                  {aiLoading
+                                    ? "LuxAlgo MCP and the LLM are designing entry, stop and targets…"
+                                    : "Add an OpenAI API key in Settings to generate this strategy."}
+                                </p>
+                              </div>
                             </div>
-                          </div>
-                        </button>
-                        {plan ? (
-                          <>
-                            <p className="mt-4 min-h-12 text-sm leading-6 text-[#b8cac3]">
-                              {plan.analysis}
-                            </p>
-                            <div className="mt-3 flex flex-wrap gap-1.5">
-                              {plan.methodology.map((method) => (
-                                <span
-                                  key={method}
-                                  className="rounded-full border border-[#a4ffcf]/15 bg-[#a4ffcf]/[.06] px-2 py-1 text-[10px] text-[#89f6bf]"
-                                >
-                                  LuxAlgo · {method}
-                                </span>
-                              ))}
-                            </div>
-                            <div className="mt-4 grid grid-cols-2 gap-2">
-                              <PlanLevel
-                                label={`${plan.entryType} entry`}
-                                value={formatScannerPrice(
-                                  result.instrument,
-                                  plan.entry,
-                                )}
-                              />
-                              <PlanLevel
-                                label="AI stop loss"
-                                value={formatScannerPrice(
-                                  result.instrument,
-                                  plan.stopLoss,
-                                )}
-                                tone="risk"
-                              />
-                              <PlanLevel
-                                label={`AI TP1${plan.riskReward1 ? ` · ${plan.riskReward1.toFixed(1)}R` : ""}`}
-                                value={formatScannerPrice(
-                                  result.instrument,
-                                  plan.takeProfit1,
-                                )}
-                                tone="reward"
-                              />
-                              <PlanLevel
-                                label={`AI TP2${plan.riskReward2 ? ` · ${plan.riskReward2.toFixed(1)}R` : ""}`}
-                                value={formatScannerPrice(
-                                  result.instrument,
-                                  plan.takeProfit2,
-                                )}
-                                tone="reward"
-                              />
-                            </div>
-                            <p className="mt-3 text-xs leading-5 text-[#a9bdb6]">
-                              <span className="text-[#89f6bf]">Trigger:</span>{" "}
-                              {plan.trigger}
-                            </p>
-                            <ul className="mt-3 space-y-1 text-xs leading-5 text-[#81978f]">
-                              {plan.reasons.map((reason) => (
-                                <li key={reason}>• {reason}</li>
-                              ))}
-                            </ul>
-                            <p className="mt-3 text-[11px] leading-4 text-rose-200/75">
-                              Invalidation: {plan.invalidation}
-                            </p>
-                            <div className="mt-4 flex items-start gap-2 rounded-lg border border-amber-300/10 bg-amber-300/[.05] p-3 text-[11px] leading-4 text-amber-100/70">
-                              <ShieldAlert
-                                className="mt-0.5 shrink-0"
-                                size={14}
-                              />
-                              <span>{plan.eventRisk}</span>
-                            </div>
-                          </>
-                        ) : (
-                          <div className="mt-4 grid min-h-64 place-items-center rounded-xl border border-dashed border-white/10 p-6 text-center">
-                            <div>
-                              <BrainCircuit className="mx-auto text-[#71887f]" />
-                              <p className="mt-3 text-sm text-[#a9bdb6]">
-                                {aiLoading
-                                  ? "LuxAlgo MCP and the LLM are designing entry, stop and targets…"
-                                  : "Add an OpenAI API key in Settings to generate this strategy."}
-                              </p>
-                            </div>
-                          </div>
-                        )}
-                      </article>
-                    );
-                  })}
+                          )}
+                        </article>
+                      );
+                    })}
                 </div>
                 {aiData && (
                   <div className="mt-3 flex flex-col justify-between gap-2 text-[11px] text-[#71887f] sm:flex-row">
