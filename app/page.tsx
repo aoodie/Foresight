@@ -83,10 +83,36 @@ type OpenTrade = {
 type TradeReview = {
   drifted: boolean;
   decision: "hold" | "review" | "reduce" | "close";
+  sentiment: "bullish" | "bearish" | "mixed" | "unclear";
   confidence: number;
   explanation: string;
   recommendedAction: string;
   reviewedAt: string;
+  reviewReason?: "high_impact_news_released" | "price_move";
+};
+type HighImpactEvent = {
+  id: string;
+  title: string;
+  country: string | null;
+  currency: string | null;
+  date: string;
+  importance: number;
+  actual: number | string | null;
+  forecast: number | string | null;
+  previous: number | string | null;
+  minutesUntil: number;
+  minutesSince: number;
+  phase: "before" | "after" | null;
+};
+type EconomicEventStatus = {
+  available: boolean;
+  instrument: string;
+  checkedAt: string;
+  blocked: boolean;
+  blockedBy: HighImpactEvent[];
+  events: HighImpactEvent[];
+  nextEvent: HighImpactEvent | null;
+  error?: string;
 };
 type StrategyEvidence = {
   id: string;
@@ -207,6 +233,16 @@ function formatScannerPrice(instrument: string, value: number | null) {
   return value === null ? "Wait" : value.toFixed(priceDecimals(instrument));
 }
 
+function formatEventTime(value: string) {
+  return new Date(value).toLocaleString("en-GB", {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZoneName: "short",
+  });
+}
+
 function chartPoints(candles: Candle[]) {
   if (candles.length < 2) return "";
   const values = candles.map((c) => c.close);
@@ -247,6 +283,7 @@ export default function Home() {
   const [quote, setQuote] = useState<Quote | null>(null);
   const [account, setAccount] = useState<AccountSummary | null>(null);
   const [openTrades, setOpenTrades] = useState<OpenTrade[]>([]);
+  const [eventStatus, setEventStatus] = useState<EconomicEventStatus | null>(null);
   const [tradeReview, setTradeReview] = useState<TradeReview | null>(null);
   const [monitorStatus, setMonitorStatus] = useState("");
   const [scanner, setScanner] = useState<ScannerData | null>(null);
@@ -274,6 +311,7 @@ export default function Home() {
   const [flattenScope, setFlattenScope] = useState<"selected" | "all">("selected");
   const scanRequested = useRef(false);
   const reviewMemory = useRef<Record<string, { price: number; at: number }>>({});
+  const eventReviewMemory = useRef<Record<string, string>>({});
   const reviewBusy = useRef(false);
 
   useEffect(() => {
@@ -482,6 +520,20 @@ export default function Home() {
     }
   }, []);
 
+  const refreshEconomicEvents = useCallback(async () => {
+    try {
+      const response = await fetch(`/api/economic-events?instrument=${instrument}&t=${Date.now()}`, { cache: "no-store" });
+      const payload = await response.json();
+      if (!response.ok) {
+        setEventStatus({ available: false, instrument, checkedAt: new Date().toISOString(), blocked: true, blockedBy: [], events: [], nextEvent: null, error: payload.error || "The economic calendar is unavailable." });
+        return;
+      }
+      setEventStatus(payload as EconomicEventStatus);
+    } catch {
+      setEventStatus({ available: false, instrument, checkedAt: new Date().toISOString(), blocked: true, blockedBy: [], events: [], nextEvent: null, error: "The economic calendar is unavailable." });
+    }
+  }, [instrument]);
+
   useEffect(() => {
     let active = true;
     (async () => {
@@ -539,6 +591,15 @@ export default function Home() {
       window.clearInterval(timer);
     };
   }, [connection, executionMode, refreshTrades]);
+
+  useEffect(() => {
+    const first = window.setTimeout(() => void refreshEconomicEvents(), 0);
+    const timer = window.setInterval(() => void refreshEconomicEvents(), 60000);
+    return () => {
+      window.clearTimeout(first);
+      window.clearInterval(timer);
+    };
+  }, [refreshEconomicEvents]);
 
   useEffect(() => {
     if (pathname !== "/" || connection !== "connected" || scanRequested.current)
@@ -688,29 +749,38 @@ export default function Home() {
   const estimatedTp1 = calculatedUnits && tp1Distance !== null && conversion !== null ? calculatedUnits * tp1Distance * conversion : null;
   const estimatedTp2 = calculatedUnits && tp2Distance !== null && conversion !== null ? calculatedUnits * tp2Distance * conversion : null;
   const monitoredTrade = openTrades.find((trade) => trade.instrument === instrument) ?? null;
+  const totalUnrealizedPL = openTrades.reduce((total, trade) => total + trade.unrealizedPL, 0);
+  const currentEventStatus = eventStatus?.instrument === instrument ? eventStatus : null;
+  const newsBlocked = !currentEventStatus || !currentEventStatus.available || currentEventStatus.blocked;
 
   useEffect(() => {
-    if (!monitoredTrade || !marketAiPlan || !marketSetup || !aiConnected || reviewBusy.current) return;
+    if (!monitoredTrade || !marketSetup || !aiConnected || reviewBusy.current) return;
+    const postEvent = (eventStatus?.instrument === instrument ? eventStatus.events : []).find((event) => event.phase === "after" && event.minutesSince <= 10) ?? null;
+    const eventReviewKey = postEvent ? `${monitoredTrade.id}:${postEvent.id}` : null;
+    const eventNeedsReview = Boolean(postEvent && eventReviewMemory.current[monitoredTrade.id] !== eventReviewKey);
     const currentPrice = quote?.mid ?? monitoredTrade.price;
     const previous = reviewMemory.current[monitoredTrade.id];
     const volatilityMove = Math.max(currentPrice * (marketSetup.atrPercent / 100) * 0.25, currentPrice * 0.0005);
     const meaningfulMove = !previous || Math.abs(currentPrice - previous.price) >= volatilityMove;
-    if (!meaningfulMove) return;
+    if (!eventNeedsReview && !meaningfulMove) return;
     const timer = window.setTimeout(() => {
       const latest = reviewMemory.current[monitoredTrade.id];
-      if (reviewBusy.current || (latest && Date.now() - latest.at < 300000)) return;
+      if (reviewBusy.current || (!eventNeedsReview && latest && Date.now() - latest.at < 300000)) return;
       reviewMemory.current[monitoredTrade.id] = { price: currentPrice, at: Date.now() };
+      if (eventNeedsReview && eventReviewKey) eventReviewMemory.current[monitoredTrade.id] = eventReviewKey;
       reviewBusy.current = true;
-      setMonitorStatus("Reviewing the open trade against its strategy…");
+      setMonitorStatus(eventNeedsReview ? "Reviewing the post-news reaction with the LLM…" : "Reviewing the open trade against its strategy…");
       void fetch("/api/ai/review", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         trade: monitoredTrade,
         currentPrice,
+        reviewReason: eventNeedsReview ? "high_impact_news_released" : "price_move",
+        eventContext: postEvent,
         style: scanMode,
         timeframes: scanner?.timeframes ?? null,
-        strategy: marketAiPlan,
+        strategy: marketAiPlan ?? marketSetup.selectedStrategy ?? null,
         technicalSnapshot: {
           score: marketSetup.score,
           bias: marketSetup.bias,
@@ -723,7 +793,7 @@ export default function Home() {
       }).then(async (response) => {
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error || "Trade review failed.");
-        setTradeReview(payload);
+        setTradeReview({ ...payload, reviewReason: eventNeedsReview ? "high_impact_news_released" : "price_move" });
         setMonitorStatus(payload.drifted ? "Strategy drift detected — review required." : "Strategy still matches the open trade.");
       }).catch((error: unknown) => {
         setMonitorStatus(error instanceof Error ? error.message : "Trade review failed.");
@@ -732,10 +802,18 @@ export default function Home() {
       });
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [aiConnected, marketAiPlan, marketSetup, monitoredTrade, quote?.mid, scanMode, scanner?.timeframes]);
+  }, [aiConnected, eventStatus, instrument, marketAiPlan, marketSetup, monitoredTrade, quote?.mid, scanMode, scanner?.timeframes]);
 
   const submitOrder = async () => {
     if (!marketSetup) return;
+    if (!eventStatus?.available) {
+      setOrderStatus("New orders are blocked until the high-impact news calendar can be verified.");
+      return;
+    }
+    if (eventStatus.blocked) {
+      setOrderStatus("New orders are blocked during the 10-minute high-impact news window.");
+      return;
+    }
     if (!calculatedUnits) {
       setOrderStatus("Waiting for account equity, a valid stop distance and a valid risk percentage.");
       return;
@@ -1883,6 +1961,20 @@ export default function Home() {
                         <div className="mt-2 rounded-lg border border-rose-300/20 bg-rose-300/[.06] p-3 text-xs leading-5 text-rose-100">
                           {environment === "practice" ? "Demo OANDA orders are enabled and use virtual funds." : "Live OANDA orders are enabled and use real funds."} Confirm every order after reviewing the calculated risk below.
                         </div>
+                        <div className={(currentEventStatus?.blocked ? "border-rose-300/30 bg-rose-300/[.08] text-rose-100" : currentEventStatus?.available ? "border-[#a4ffcf]/15 bg-[#a4ffcf]/[.04] text-[#a9bdb6]" : "border-amber-300/20 bg-amber-300/[.06] text-amber-100") + " mt-3 rounded-lg border p-3 text-xs leading-5"}>
+                          <p className="font-medium text-white">HIGH-IMPACT NEWS GATE</p>
+                          <p className="mt-1">
+                            {!currentEventStatus
+                              ? "Checking the economic calendar before allowing a new order…"
+                              : !currentEventStatus.available
+                                ? "New orders are blocked because the high-impact economic calendar could not be verified."
+                                : currentEventStatus.blocked
+                                  ? `Do not open a new position: ${currentEventStatus.blockedBy[0]?.title ?? "high-impact news"} is inside the 10-minute before/after window.`
+                                  : currentEventStatus.nextEvent
+                                    ? `Next relevant high-impact event: ${currentEventStatus.nextEvent.title} at ${formatEventTime(currentEventStatus.nextEvent.date)}.`
+                                    : "No relevant high-impact event is inside the current calendar window."}
+                          </p>
+                        </div>
                         <div className="mt-3 grid gap-3 sm:grid-cols-2">
                           <Select
                             value={scanMode}
@@ -1953,6 +2045,7 @@ export default function Home() {
                             !marketSetup ||
                             !calculatedUnits ||
                             !validRiskPercent ||
+                            newsBlocked ||
                             (executionMode === "live" && !liveConfirm)
                           }
                           className="mt-3 w-full bg-[#a4ffcf] text-[#07100f] hover:bg-[#d0ffe1]"
@@ -1998,12 +2091,16 @@ export default function Home() {
                                 <p className="mt-1 text-[#a9bdb6]">
                                   OANDA trade: {monitoredTrade.units > 0 ? "long" : "short"} {Math.abs(monitoredTrade.units).toLocaleString()} units · open {formatScannerPrice(instrument, monitoredTrade.price)} · unrealised {monitoredTrade.unrealizedPL.toFixed(2)} {account?.currency ?? ""}
                                 </p>
+                                <p className={(monitoredTrade.unrealizedPL >= 0 ? "text-[#89f6bf]" : "text-rose-200") + " mt-1 font-medium"}>
+                                  Live P&amp;L: {monitoredTrade.unrealizedPL >= 0 ? "+" : ""}{monitoredTrade.unrealizedPL.toFixed(2)} {account?.currency ?? ""} · all open trades: {totalUnrealizedPL >= 0 ? "+" : ""}{totalUnrealizedPL.toFixed(2)} {account?.currency ?? ""}
+                                </p>
                                 <p className={tradeReview?.drifted ? "mt-1 text-rose-200" : "mt-1 text-[#89f6bf]"}>
                                   {tradeReview ? `${tradeReview.decision.toUpperCase()}: ${tradeReview.explanation}` : monitorStatus || "Rule monitor is checking for a meaningful strategy change."}
                                 </p>
+                                {tradeReview && <p className="mt-1 text-[#c7d2cc]">{tradeReview.reviewReason === "high_impact_news_released" ? "Post-news sentiment" : "Current trade sentiment"}: {tradeReview.sentiment} · confidence {tradeReview.confidence}%</p>}
                                 {tradeReview?.drifted && <p className="mt-1 text-rose-200">Recommended action: {tradeReview.recommendedAction}</p>}
                                 <p className="mt-1 text-[10px] text-[#71887f]">
-                                  Rule checks poll every 5 seconds. AI re-checks only after a meaningful move and no more than once every 5 minutes; it never closes or changes an order automatically.
+                                  Live P&amp;L refreshes with OANDA trade polling. Rule checks poll every 5 seconds. After a high-impact release, the LLM reviews event sentiment and whether to hold or close; it never closes or changes an order automatically.
                                 </p>
                               </>
                             ) : (

@@ -102,6 +102,7 @@ export async function generateStrategies(apiKey: string, model: string, markets:
 export type LiveTradeReview = {
   drifted: boolean;
   decision: "hold" | "review" | "reduce" | "close";
+  sentiment: "bullish" | "bearish" | "mixed" | "unclear";
   confidence: number;
   explanation: string;
   recommendedAction: string;
@@ -113,11 +114,12 @@ const reviewSchema = {
   properties: {
     drifted: { type: "boolean" },
     decision: { type: "string", enum: ["hold", "review", "reduce", "close"] },
+    sentiment: { type: "string", enum: ["bullish", "bearish", "mixed", "unclear"] },
     confidence: { type: "number", minimum: 0, maximum: 100 },
     explanation: { type: "string" },
     recommendedAction: { type: "string" },
   },
-  required: ["drifted", "decision", "confidence", "explanation", "recommendedAction"],
+  required: ["drifted", "decision", "sentiment", "confidence", "explanation", "recommendedAction"],
 };
 
 export async function reviewLiveTrade(apiKey: string, model: string, input: unknown): Promise<LiveTradeReview> {
@@ -126,7 +128,7 @@ export async function reviewLiveTrade(apiKey: string, model: string, input: unkn
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify({
       model,
-      instructions: "Review an already-open FX or CFD paper/live trade against the strategy that created it. This is a monitoring check, not an order-execution instruction. Decide whether the strategy has materially drifted. Use only the supplied trade, current quote, original plan, volatility and timeframe data. Do not invent news or prices. Keep the explanation plain English and concise. Do not tell the system to move a stop automatically. If the stop or target has been reached, say so clearly. A normal fluctuation inside the original plan is hold; a meaningful break of the invalidation logic is drifted and needs review. This is research, not personalised financial advice.",
+      instructions: "Review an already-open FX or CFD trade against the strategy that created it. This is a monitoring check, not an order-execution instruction. Decide whether the strategy has materially drifted. Use only the supplied trade, current quote, original plan, volatility, timeframe data and high-impact event data. If an event context is supplied, assess the event's likely sentiment only from the supplied actual, forecast and previous values; if actual data is missing, use unclear or mixed and say that confirmation is unavailable. Decide whether to hold, review, reduce or close the position. Do not invent news or prices. Keep the explanation plain English and concise. Do not tell the system to move a stop automatically. If the stop or target has been reached, say so clearly. A normal fluctuation inside the original plan is hold; a meaningful break of the invalidation logic or adverse event reaction needs review or close. This is research, not personalised financial advice.",
       input: JSON.stringify(input),
       text: { format: { type: "json_schema", name: "live_trade_review", strict: true, schema: reviewSchema } },
     }),

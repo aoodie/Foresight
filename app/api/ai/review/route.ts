@@ -14,7 +14,7 @@ export async function POST(request: Request) {
   if (!body || typeof body !== "object") return NextResponse.json({ error: "Trade review data is missing." }, { status: 400 });
   try {
     const review = await reviewLiveTrade(connection.apiKey, connection.model, body);
-    await writeSystemLog({ level: review.drifted ? "warning" : "info", category: "monitor", event: review.drifted ? "strategy.drift_detected" : "strategy.reviewed", message: review.explanation, details: { decision: review.decision, confidence: review.confidence } });
+    await writeSystemLog({ level: review.drifted || review.decision === "close" ? "warning" : "info", category: "monitor", event: review.drifted ? "strategy.drift_detected" : "strategy.reviewed", message: review.explanation, details: { decision: review.decision, sentiment: review.sentiment, confidence: review.confidence, eventContext: typeof body === "object" && body !== null && "eventContext" in body ? (body as { eventContext?: unknown }).eventContext : null } });
     return NextResponse.json({ ...review, reviewedAt: new Date().toISOString(), model: connection.model });
   } catch (error) {
     try { await writeSystemLog({ level: "error", category: "monitor", event: "strategy.review_failed", message: error instanceof Error ? error.message : "Trade review failed." }); } catch { /* Preserve the original review error. */ }
