@@ -36,7 +36,7 @@ function Widget({ source, config, label }: { source: string; config: Record<stri
     return () => current.replaceChildren();
   }, [source, configKey]);
 
-  return <div ref={container} className="tradingview-widget-container h-[520px] w-full bg-[#0c1916]" aria-label={label}/>;
+  return <div ref={container} style={{ height: "720px", minHeight: "560px" }} className="tradingview-widget-container h-[720px] min-h-[560px] w-full bg-[#0c1916]" aria-label={label}/>;
 }
 
 export function EconomicCalendar() {
