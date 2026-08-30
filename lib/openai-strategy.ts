@@ -32,6 +32,7 @@ export type AiStrategy = {
   trigger: string;
   invalidation: string;
   eventRisk: string;
+  methodology: string[];
 };
 
 const strategyProperties = {
@@ -52,6 +53,7 @@ const strategyProperties = {
   trigger: { type: "string" },
   invalidation: { type: "string" },
   eventRisk: { type: "string" },
+  methodology: { type: "array", minItems: 1, maxItems: 3, items: { type: "string" } },
 };
 
 const outputSchema = {
@@ -77,14 +79,14 @@ export function isStrategyMarket(value: unknown): value is StrategyMarket {
     typeof market.invalidation === "string" && typeof market.updatedAt === "string";
 }
 
-export async function generateStrategies(apiKey: string, model: string, markets: StrategyMarket[]): Promise<AiStrategy[]> {
+export async function generateStrategies(apiKey: string, model: string, markets: StrategyMarket[], luxAlgoResearch: unknown): Promise<AiStrategy[]> {
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify({
       model,
-      instructions: "You are a cautious institutional-style FX research analyst. Produce one independent intraday-to-swing research strategy for each supplied market using only the supplied H4 technical snapshot. Set structure-aware entry, stop loss and two take profits; do not mechanically copy the baseline levels. A valid trade must have coherent directional price ordering and TP1 risk/reward of at least 1.5. Return wait/no_trade with null levels when evidence conflicts or confidence is below 60. Never invent news or economic events: eventRisk must tell the reader which relevant currency or US event risks to verify in the live calendar before entry. Keep analysis concise. This is research, not personalised financial advice, and no trade is executed.",
-      input: JSON.stringify({ timeframe: "H4", generatedAt: new Date().toISOString(), markets }),
+      instructions: "You are a cautious institutional-style FX research analyst. Produce one independent intraday-to-swing research strategy for each supplied market using the H4 technical snapshot and the supplied LuxAlgo Library MCP research. Apply only LuxAlgo concepts actually present in that research and list the concept names used in methodology. Set structure-aware entry, stop loss and two take profits; do not mechanically copy the scanner's baseline levels. A valid trade must have coherent directional price ordering and TP1 risk/reward of at least 1.5. Return wait/no_trade with null levels when evidence conflicts or confidence is below 60. Never invent chart patterns not established by the supplied data, and never invent news or economic events: eventRisk must tell the reader which relevant currency or US event risks to verify in the live calendar before entry. Keep analysis concise. This is research, not personalised financial advice, and no trade is executed.",
+      input: JSON.stringify({ timeframe: "H4", generatedAt: new Date().toISOString(), markets, luxAlgoResearch }),
       text: { format: { type: "json_schema", name: "daily_trade_strategies", strict: true, schema: outputSchema } },
     }),
   });

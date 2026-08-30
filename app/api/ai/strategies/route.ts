@@ -2,6 +2,7 @@ import { headers } from "next/headers";
 import { NextResponse } from "next/server";
 import { getAiKey } from "@/lib/ai-secret";
 import { generateStrategies, isStrategyMarket } from "@/lib/openai-strategy";
+import { getLuxAlgoGrounding } from "@/lib/luxalgo-mcp";
 
 async function ownerRequest() { return Boolean((await headers()).get("oai-authenticated-user-email")); }
 
@@ -13,8 +14,9 @@ export async function POST(request: Request) {
   const markets = body.markets?.slice(0, 3) ?? [];
   if (!markets.length || !markets.every(isStrategyMarket)) return NextResponse.json({ error: "The scanner data is incomplete. Run the daily scan again." }, { status: 400 });
   try {
-    const strategies = await generateStrategies(connection.apiKey, connection.model, markets);
-    return NextResponse.json({ model: connection.model, generatedAt: new Date().toISOString(), strategies });
+    const luxAlgoSources = await getLuxAlgoGrounding();
+    const strategies = await generateStrategies(connection.apiKey, connection.model, markets, luxAlgoSources);
+    return NextResponse.json({ model: connection.model, generatedAt: new Date().toISOString(), strategies, luxAlgoSources: luxAlgoSources.map((source) => ({ slug: source.slug, name: source.name, family: source.family, url: source.url })) });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Unable to generate AI strategies." }, { status: 502 });
   }
