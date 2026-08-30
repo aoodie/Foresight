@@ -24,7 +24,13 @@ const intervals: Record<string, string> = {
   H4: "240",
 };
 
-export function TradingViewChart({ instrument, granularity }: { instrument: string; granularity: string }) {
+export function TradingViewChart({
+  instrument,
+  granularity,
+}: {
+  instrument: string;
+  granularity: string;
+}) {
   const container = useRef<HTMLDivElement>(null);
   const symbol = symbols[instrument] ?? symbols.EUR_USD;
 
@@ -36,7 +42,8 @@ export function TradingViewChart({ instrument, granularity }: { instrument: stri
     const widget = document.createElement("div");
     widget.className = "tradingview-widget-container__widget h-full w-full";
     const script = document.createElement("script");
-    script.src = "https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js";
+    script.src =
+      "https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js";
     script.type = "text/javascript";
     script.async = true;
     script.text = JSON.stringify({
@@ -55,7 +62,7 @@ export function TradingViewChart({ instrument, granularity }: { instrument: stri
       hide_side_toolbar: false,
       hide_top_toolbar: false,
       save_image: false,
-      studies: ["STD;EMA", "STD;RSI"],
+      studies: ["STD;EMA", "STD;RSI", "VWAP@tv-basicstudies"],
       support_host: "https://www.tradingview.com",
     });
 
@@ -65,7 +72,10 @@ export function TradingViewChart({ instrument, granularity }: { instrument: stri
 
   return (
     <div className="h-[560px] overflow-hidden rounded-xl border border-white/5 bg-[#0c1916]">
-      <div ref={container} className="tradingview-widget-container h-full w-full" />
+      <div
+        ref={container}
+        className="tradingview-widget-container h-full w-full"
+      />
     </div>
   );
 }

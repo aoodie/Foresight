@@ -1662,7 +1662,9 @@ export default function Home() {
               />
               <p className="mt-3 text-[11px] leading-5 text-[#71887f]">
                 Charting and indicator data are supplied by TradingView and may
-                differ slightly from the OANDA account quote shown above.
+                differ slightly from the OANDA account quote shown above. The
+                chart includes EMA, RSI and VWAP; VWAP is a visual intraday
+                fair-value reference.
               </p>
             </section>
 
