@@ -110,7 +110,13 @@ export default function Home() {
       const response = await fetch("/api/oanda/scanner?mode=" + scanMode + "&t=" + Date.now(), { cache: "no-store" });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || payload.message || "Unable to complete the daily scan.");
-      setScanner(payload);
+      setScanner({
+        ...payload,
+        mode: payload.mode === "scalping" || payload.mode === "swing" ? payload.mode : "intraday",
+        timeframes: payload.timeframes ?? { context: "H4", setup: "H1", trigger: "M15", frames: ["H4", "H1", "M15"] },
+        results: Array.isArray(payload.results) ? payload.results : [],
+        unavailable: Array.isArray(payload.unavailable) ? payload.unavailable : [],
+      });
       setAiData(null);
       setAiSourceScan("");
     } catch (error) {
