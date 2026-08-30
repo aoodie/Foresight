@@ -33,3 +33,15 @@ test("rejects empty OANDA payloads", async () => {
   assert.throws(() => normaliseOandaPayload({ candles: [] }), /no usable candles/i);
   assert.throws(() => normaliseOandaPrice({ prices: [] }), /no usable live quote/i);
 });
+
+test("ranks a strongly trending instrument with an actionable bias", async () => {
+  const { analyseInstrument } = await vite.ssrLoadModule("/lib/market-scanner.ts");
+  const candles = Array.from({ length: 80 }, (_, index) => {
+    const open = 1.08 + index * 0.0004;
+    return { time: new Date(Date.UTC(2026, 0, 1, index * 4)).toISOString(), open, high: open + 0.0007, low: open - 0.0003, close: open + 0.0005, complete: true };
+  });
+  const result = analyseInstrument({ instrument: "EUR_USD", label: "EUR / USD", assetClass: "forex", candles });
+  assert.equal(result.bias, "long");
+  assert.ok(result.score >= 70);
+  assert.ok(result.atrPercent > 0);
+});

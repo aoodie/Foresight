@@ -6,7 +6,15 @@ const symbols: Record<string, string> = {
   EUR_USD: "OANDA:EURUSD",
   GBP_USD: "OANDA:GBPUSD",
   USD_JPY: "OANDA:USDJPY",
+  USD_CHF: "OANDA:USDCHF",
+  AUD_USD: "OANDA:AUDUSD",
+  NZD_USD: "OANDA:NZDUSD",
+  USD_CAD: "OANDA:USDCAD",
+  EUR_GBP: "OANDA:EURGBP",
+  EUR_JPY: "OANDA:EURJPY",
+  GBP_JPY: "OANDA:GBPJPY",
   XAU_USD: "OANDA:XAUUSD",
+  US30_USD: "OANDA:US30USD",
 };
 
 const intervals: Record<string, string> = {

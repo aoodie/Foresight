@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertCircle, CheckCircle2, CircleDot, RefreshCw, Settings2, Wifi } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AlertCircle, CheckCircle2, CircleDot, RefreshCw, ScanSearch, Settings2, Wifi } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -10,24 +10,36 @@ import { TradingViewChart } from "@/components/tradingview-chart";
 type Candle = { time: string; open: number; high: number; low: number; close: number; complete: boolean };
 type MarketData = { candles: Candle[]; price: number; changePercent: number; lastUpdated: string; environment: "practice" | "live" };
 type Quote = { bid: number; ask: number; mid: number; spread: number; time: string; tradeable: boolean; marketStatus: string; environment: "practice" | "live" };
+type ScanResult = { instrument: string; label: string; assetClass: "forex" | "metal" | "index"; bias: "long" | "short" | "neutral"; score: number; price: number; change24h: number; rsi: number; atrPercent: number; rangePosition: number; setup: string; updatedAt: string };
+type ScannerData = { generatedAt: string; timeframe: string; results: ScanResult[]; unavailable: Array<{ instrument: string; label: string }> };
 type ConnectionState = "checking" | "disconnected" | "configured" | "connected" | "error";
 
 const instruments = [
   { value: "EUR_USD", label: "EUR / USD", note: "Most liquid major" },
   { value: "GBP_USD", label: "GBP / USD", note: "London momentum" },
   { value: "USD_JPY", label: "USD / JPY", note: "Rates-sensitive major" },
+  { value: "USD_CHF", label: "USD / CHF", note: "Defensive dollar pair" },
+  { value: "AUD_USD", label: "AUD / USD", note: "Risk and China sensitivity" },
+  { value: "NZD_USD", label: "NZD / USD", note: "Asia-Pacific momentum" },
+  { value: "USD_CAD", label: "USD / CAD", note: "Oil-sensitive major" },
+  { value: "EUR_GBP", label: "EUR / GBP", note: "European relative strength" },
+  { value: "EUR_JPY", label: "EUR / JPY", note: "Risk-on cross" },
+  { value: "GBP_JPY", label: "GBP / JPY", note: "High-volatility cross" },
   { value: "XAU_USD", label: "XAU / USD", note: "Gold versus US dollar" },
+  { value: "US30_USD", label: "US30", note: "Dow Jones CFD" },
 ];
 
 function priceDecimals(instrument: string) {
-  if (instrument === "USD_JPY") return 3;
+  if (instrument.endsWith("_JPY")) return 3;
   if (instrument === "XAU_USD") return 2;
+  if (instrument === "US30_USD") return 1;
   return 5;
 }
 
 function pipMultiplier(instrument: string) {
-  if (instrument === "USD_JPY") return 100;
+  if (instrument.endsWith("_JPY")) return 100;
   if (instrument === "XAU_USD") return 10;
+  if (instrument === "US30_USD") return 1;
   return 10000;
 }
 
@@ -50,6 +62,25 @@ export default function Home() {
   const [message, setMessage] = useState("");
   const [data, setData] = useState<MarketData | null>(null);
   const [quote, setQuote] = useState<Quote | null>(null);
+  const [scanner, setScanner] = useState<ScannerData | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [scannerError, setScannerError] = useState("");
+  const scanRequested = useRef(false);
+
+  const runScanner = useCallback(async () => {
+    setScanning(true);
+    setScannerError("");
+    try {
+      const response = await fetch("/api/oanda/scanner?t=" + Date.now(), { cache: "no-store" });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || payload.message || "Unable to complete the daily scan.");
+      setScanner(payload);
+    } catch (error) {
+      setScannerError(error instanceof Error ? error.message : "Unable to complete the daily scan.");
+    } finally {
+      setScanning(false);
+    }
+  }, []);
 
   const refreshCandles = useCallback(async () => {
     setLoading(true);
@@ -110,6 +141,12 @@ export default function Home() {
     return () => window.clearInterval(timer);
   }, [connection, refreshQuote]);
 
+  useEffect(() => {
+    if (connection !== "connected" || scanRequested.current) return;
+    scanRequested.current = true;
+    void runScanner();
+  }, [connection, runScanner]);
+
   const saveConnection = async () => {
     setSaving(true);
     setMessage("Validating token and live pricing with OANDA…");
@@ -143,6 +180,7 @@ export default function Home() {
   const displayPrice = quote?.mid ?? data?.price;
   const spreadPips = quote ? quote.spread * pipMultiplier(instrument) : null;
   const statusLabel = connection === "connected" ? "Live · " + environment : connection === "configured" ? "Connecting · " + environment : connection === "error" ? "Connection problem" : connection === "checking" ? "Checking OANDA" : "OANDA not connected";
+  const topSetup = scanner?.results[0];
 
   return (
     <main className="min-h-screen bg-[#07100f] text-[#e8f3ee] selection:bg-[#a4ffcf] selection:text-[#07100f]">
@@ -175,6 +213,27 @@ export default function Home() {
         </section>
 
         {message && !settingsOpen && <div className="mb-4 flex items-start gap-3 rounded-xl border border-rose-400/25 bg-rose-400/10 p-4 text-sm text-rose-200"><AlertCircle className="mt-0.5 shrink-0" size={18}/><div><p className="font-medium">OANDA connection failed</p><p className="mt-1 text-rose-200/80">{message}</p><button onClick={() => setSettingsOpen(true)} className="mt-2 underline underline-offset-4">Check connection settings</button></div></div>}
+
+        <section className="mb-5 overflow-hidden rounded-2xl border border-white/10 bg-[#0c1916]">
+          <div className="flex flex-col justify-between gap-4 border-b border-white/10 p-5 sm:flex-row sm:items-center">
+            <div className="flex items-start gap-3"><span className="mt-0.5 grid h-9 w-9 place-items-center rounded-lg bg-[#a4ffcf]/10 text-[#a4ffcf]"><ScanSearch size={19}/></span><div><p className="text-xs tracking-[.14em] text-[#8aa29a]">DAILY OPPORTUNITY SCANNER</p><h2 className="mt-1 text-lg">10 forex pairs + XAU/USD + US30</h2><p className="mt-1 text-xs text-[#71887f]">H4 trend, momentum, RSI, ATR and current 24-hour range position</p></div></div>
+            <Button onClick={runScanner} disabled={scanning || connection === "disconnected" || connection === "checking"} className="bg-[#a4ffcf] text-[#07100f] hover:bg-[#d0ffe1]"><RefreshCw className={scanning ? "animate-spin" : ""}/>{scanning ? "Scanning 12 markets…" : "Run daily scan"}</Button>
+          </div>
+
+          {scannerError && <div className="border-b border-rose-400/20 bg-rose-400/10 px-5 py-3 text-sm text-rose-200">{scannerError}</div>}
+          {topSetup && <button onClick={() => { setQuote(null); setInstrument(topSetup.instrument); }} className="grid w-full gap-4 border-b border-white/10 bg-[#a4ffcf]/[.045] p-5 text-left md:grid-cols-[1.2fr_.7fr_1.8fr] md:items-center"><div><p className="text-[10px] tracking-[.14em] text-[#89f6bf]">TOP-RANKED SETUP</p><p className="mt-1 text-2xl font-semibold">{topSetup.label}</p></div><div><Bias bias={topSetup.bias}/><p className="mt-1 text-xs text-[#8aa29a]">Confidence score {topSetup.score}/100</p></div><p className="text-sm text-[#a9bdb6]">{topSetup.setup}</p></button>}
+
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[820px] text-left text-sm">
+              <thead className="text-[10px] uppercase tracking-[.12em] text-[#71887f]"><tr><th className="px-5 py-3 font-medium">Rank</th><th className="px-3 py-3 font-medium">Market</th><th className="px-3 py-3 font-medium">Bias</th><th className="px-3 py-3 font-medium">Score</th><th className="px-3 py-3 font-medium">24h move</th><th className="px-3 py-3 font-medium">RSI</th><th className="px-3 py-3 font-medium">ATR %</th><th className="px-3 py-3 font-medium">Range</th><th className="px-5 py-3 font-medium">Research read</th></tr></thead>
+              <tbody className="divide-y divide-white/[.06]">
+                {scanner?.results.map((result, index) => <tr key={result.instrument} onClick={() => { setQuote(null); setInstrument(result.instrument); }} className="cursor-pointer transition-colors hover:bg-white/[.035]"><td className="px-5 py-3 text-[#71887f]">{index + 1}</td><td className="px-3 py-3 font-medium">{result.label}<span className="ml-2 text-[10px] uppercase text-[#71887f]">{result.assetClass}</span></td><td className="px-3 py-3"><Bias bias={result.bias}/></td><td className="px-3 py-3 font-mono">{result.score}</td><td className={(result.change24h >= 0 ? "text-[#59dfa9]" : "text-rose-400") + " px-3 py-3 font-mono"}>{result.change24h >= 0 ? "+" : ""}{result.change24h.toFixed(2)}%</td><td className="px-3 py-3 font-mono">{result.rsi.toFixed(0)}</td><td className="px-3 py-3 font-mono">{result.atrPercent.toFixed(2)}%</td><td className="px-3 py-3 font-mono">{result.rangePosition.toFixed(0)}%</td><td className="px-5 py-3 text-xs text-[#94a9a2]">{result.setup}</td></tr>)}
+                {!scanner && <tr><td colSpan={9} className="px-5 py-10 text-center text-[#71887f]">{scanning ? "Reading OANDA H4 structure across 12 markets…" : "Run the daily scan to rank today’s opportunities."}</td></tr>}
+              </tbody>
+            </table>
+          </div>
+          {scanner && <div className="flex flex-col justify-between gap-2 border-t border-white/10 px-5 py-3 text-[11px] text-[#71887f] sm:flex-row"><span>Generated {new Date(scanner.generatedAt).toLocaleString("en-GB", { timeZone: "UTC" })} UTC</span><span>{scanner.unavailable.length ? "Unavailable on this OANDA account: " + scanner.unavailable.map((item) => item.label).join(", ") : "All 12 required markets included"}</span></div>}
+        </section>
 
         <section className="grid gap-4 xl:grid-cols-[1.65fr_.95fr]">
           <div className="rounded-2xl border border-white/10 bg-[#0c1916] p-4 sm:p-6">
@@ -221,3 +280,4 @@ export default function Home() {
 
 function Metric({ label, value, tone }: { label: string; value: string; tone?: "mint" }) { return <div className="rounded-lg bg-black/20 p-3"><p className="text-[10px] uppercase tracking-[.12em] text-[#71887f]">{label}</p><p className={(tone === "mint" ? "text-[#89f6bf]" : "text-white") + " mt-1 text-sm font-medium"}>{value}</p></div>; }
 function Row({ label, value }: { label: string; value: string }) { return <div className="flex justify-between gap-4"><span className="text-[#8aa29a]">{label}</span><span className="text-right capitalize">{value}</span></div>; }
+function Bias({ bias }: { bias: "long" | "short" | "neutral" }) { return <span className={(bias === "long" ? "bg-[#59dfa9]/10 text-[#89f6bf]" : bias === "short" ? "bg-rose-400/10 text-rose-300" : "bg-amber-400/10 text-amber-300") + " inline-flex rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[.1em]"}>{bias}</span>; }

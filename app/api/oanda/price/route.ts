@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { fetchOandaAccountId, fetchOandaPrice, OandaApiError } from "@/lib/oanda-api";
 import { getOandaToken, saveOandaAccountId } from "@/lib/oanda-secret";
 
-const allowed = new Set(["EUR_USD", "GBP_USD", "USD_JPY", "XAU_USD"]);
+const allowed = new Set(["EUR_USD", "GBP_USD", "USD_JPY", "USD_CHF", "AUD_USD", "NZD_USD", "USD_CAD", "EUR_GBP", "EUR_JPY", "GBP_JPY", "XAU_USD", "US30_USD"]);
 
 export async function GET(request: Request) {
   const instrument = new URL(request.url).searchParams.get("instrument") ?? "EUR_USD";
