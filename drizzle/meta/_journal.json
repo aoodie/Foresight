@@ -8,6 +8,13 @@
       "when": 1788074162419,
       "tag": "0000_dry_famine",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1788099741717,
+      "tag": "0001_slimy_drax",
+      "breakpoints": true
     }
   ]
 }

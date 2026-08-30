@@ -7,42 +7,11 @@
     "oanda_connection": {
       "name": "oanda_connection",
       "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "environment": {
-          "name": "environment",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "'practice'"
-        },
-        "token_ciphertext": {
-          "name": "token_ciphertext",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "token_iv": {
-          "name": "token_iv",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
+        "id": { "name": "id", "type": "text", "primaryKey": true, "notNull": true, "autoincrement": false },
+        "environment": { "name": "environment", "type": "text", "primaryKey": false, "notNull": true, "autoincrement": false, "default": "'practice'" },
+        "token_ciphertext": { "name": "token_ciphertext", "type": "text", "primaryKey": false, "notNull": true, "autoincrement": false },
+        "token_iv": { "name": "token_iv", "type": "text", "primaryKey": false, "notNull": true, "autoincrement": false },
+        "updated_at": { "name": "updated_at", "type": "text", "primaryKey": false, "notNull": true, "autoincrement": false }
       },
       "indexes": {},
       "foreignKeys": {},
@@ -53,12 +22,6 @@
   },
   "views": {},
   "enums": {},
-  "_meta": {
-    "schemas": {},
-    "tables": {},
-    "columns": {}
-  },
-  "internal": {
-    "indexes": {}
-  }
+  "_meta": { "schemas": {}, "tables": {}, "columns": {} },
+  "internal": { "indexes": {} }
 }

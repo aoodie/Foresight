@@ -1,0 +1,1 @@
+ALTER TABLE `oanda_connection` ADD `account_id` text;

@@ -18,7 +18,18 @@ test("normalises OANDA midpoint candles", async () => {
   assert.ok(result.changePercent > 0);
 });
 
-test("rejects empty OANDA candle payloads", async () => {
-  const { normaliseOandaPayload } = await vite.ssrLoadModule("/lib/oanda-api.ts");
+test("normalises an OANDA bid and ask quote", async () => {
+  const { normaliseOandaPrice } = await vite.ssrLoadModule("/lib/oanda-api.ts");
+  const result = normaliseOandaPrice({ prices: [{ time: "2026-01-01T12:00:00Z", tradeable: true, status: "tradeable", bids: [{ price: "1.10120" }], asks: [{ price: "1.10134" }] }] });
+  assert.equal(result.bid, 1.1012);
+  assert.equal(result.ask, 1.10134);
+  assert.equal(result.mid, 1.10127);
+  assert.ok(result.spread > 0);
+  assert.equal(result.tradeable, true);
+});
+
+test("rejects empty OANDA payloads", async () => {
+  const { normaliseOandaPayload, normaliseOandaPrice } = await vite.ssrLoadModule("/lib/oanda-api.ts");
   assert.throws(() => normaliseOandaPayload({ candles: [] }), /no usable candles/i);
+  assert.throws(() => normaliseOandaPrice({ prices: [] }), /no usable live quote/i);
 });

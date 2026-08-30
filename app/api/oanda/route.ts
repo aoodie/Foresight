@@ -1,10 +1,14 @@
 import { NextResponse } from "next/server";
 import { getOandaToken } from "@/lib/oanda-secret";
 import { fetchOandaCandles, OandaApiError } from "@/lib/oanda-api";
+
 const allowed = new Set(["EUR_USD", "GBP_USD", "USD_JPY", "XAU_USD"]);
 const granularities = new Set(["M15", "H1", "H4"]);
+
 export async function GET(request: Request) {
-  const url = new URL(request.url), instrument = url.searchParams.get("instrument") ?? "EUR_USD", granularity = url.searchParams.get("granularity") ?? "H1";
+  const url = new URL(request.url);
+  const instrument = url.searchParams.get("instrument") ?? "EUR_USD";
+  const granularity = url.searchParams.get("granularity") ?? "H1";
   if (!allowed.has(instrument)) return NextResponse.json({ error: "Unsupported instrument" }, { status: 400 });
   if (!granularities.has(granularity)) return NextResponse.json({ error: "Unsupported granularity" }, { status: 400 });
   const connection = await getOandaToken();
