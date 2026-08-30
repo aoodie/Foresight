@@ -205,6 +205,12 @@ export default function Home() {
     return () => window.clearTimeout(timer);
   }, [aiConnected, aiLoading, aiSourceScan, generateAiStrategies, scanner]);
 
+  useEffect(() => {
+    if (!pathname.startsWith("/markets") || connection !== "connected" || (scanner && scanner.mode === scanMode)) return;
+    const timer = window.setTimeout(() => { void runScanner(); }, 0);
+    return () => window.clearTimeout(timer);
+  }, [connection, pathname, runScanner, scanMode, scanner]);
+
   const saveConnection = async () => {
     setSaving(true);
     setMessage("Validating token and live pricing with OANDA…");
@@ -256,6 +262,7 @@ export default function Home() {
   const spreadPips = quote ? quote.spread * pipMultiplier(instrument) : null;
   const statusLabel = connection === "connected" ? "Live · " + environment : connection === "configured" ? "Connecting · " + environment : connection === "error" ? "Connection problem" : connection === "checking" ? "Checking OANDA" : "OANDA not connected";
   const topSetup = scanner?.results[0];
+  const marketSetup = scanner?.results.find((item) => item.instrument === instrument);
   const isOverview = pathname === "/";
   const isMarkets = pathname.startsWith("/markets");
   const isResearch = pathname.startsWith("/research");
@@ -364,6 +371,14 @@ export default function Home() {
             <Button onClick={() => { void Promise.all([refreshCandles(), refreshQuote()]); }} disabled={loading || connection === "disconnected" || connection === "checking"} className="mt-7 w-full bg-[#a4ffcf] text-[#07100f] hover:bg-[#d0ffe1]"><RefreshCw className={loading ? "animate-spin" : ""}/>{loading ? "Refreshing…" : "Refresh now"}</Button>
             {(connection === "disconnected" || connection === "error") && <Button variant="ghost" onClick={() => { setMessage(""); setSettingsOpen(true); }} className="mt-2 w-full text-[#a4ffcf]">Open connection settings</Button>}
           </aside>
+        </section>
+
+        <section className="mt-5 grid gap-4 xl:grid-cols-[1.2fr_.8fr]">
+          <div className="rounded-2xl border border-[#a4ffcf]/15 bg-[#0c1916] p-5 sm:p-6">
+            <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs tracking-[.14em] text-[#89f6bf]">STYLE-SPECIFIC MARKET PLAN</p><h2 className="mt-1 text-xl">{instrument.replace("_", " / ")} analysis</h2><p className="mt-1 text-xs text-[#8aa29a]">{scanMode} mode · {scanner ? `${scanner.timeframes.context} context → ${scanner.timeframes.setup} setup → ${scanner.timeframes.trigger} trigger` : "Run the scanner to load aligned timeframes"}</p></div><Bias bias={marketSetup?.bias ?? "neutral"}/></div>
+            {marketSetup ? <><p className="mt-5 text-sm leading-6 text-[#c0d1ca]">{marketSetup.analysis}</p><div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4"><PlanLevel label="Reference entry" value={formatScannerPrice(instrument, marketSetup.entry)}/><PlanLevel label="Stop loss" value={formatScannerPrice(instrument, marketSetup.stopLoss)} tone="risk"/><PlanLevel label="Take profit 1" value={formatScannerPrice(instrument, marketSetup.takeProfit1)} tone="reward"/><PlanLevel label="Take profit 2" value={formatScannerPrice(instrument, marketSetup.takeProfit2)} tone="reward"/></div><div className="mt-5 grid gap-3 sm:grid-cols-2"><div className="rounded-xl border border-white/8 bg-black/15 p-4"><p className="text-[10px] tracking-[.12em] text-[#89f6bf]">CONFIRMATIONS USED</p><ul className="mt-2 space-y-1 text-xs leading-5 text-[#a9bdb6]"><li>• PAC structure and trend direction</li><li>• Liquidity sweep, order-block or imbalance zone</li><li>• RSI momentum and ATR volatility risk</li><li>• {marketSetup.confirmations ?? 0}/{marketSetup.timeframeAlignment?.length ?? 0} selected timeframes aligned</li></ul></div><div className="rounded-xl border border-amber-300/10 bg-amber-300/[.04] p-4"><p className="text-[10px] tracking-[.12em] text-amber-200/80">TRADE PLAN</p><p className="mt-2 text-xs leading-5 text-[#c7d2cc]">{marketSetup.setup}</p><p className="mt-2 text-xs leading-5 text-rose-200/75">Invalidation: {marketSetup.invalidation}</p></div></div></> : <div className="mt-5 rounded-xl border border-dashed border-white/10 p-6 text-sm text-[#81978f]">Run the daily scanner to populate multi-timeframe analysis, LuxAlgo confirmations and style-specific TP/SL levels for this market.</div>}
+          </div>
+          <div className="rounded-2xl border border-white/10 bg-[#0c1916] p-5"><div className="flex items-center gap-2"><Newspaper size={18} className="text-[#a4ffcf]"/><div><p className="text-xs tracking-[.14em] text-[#8aa29a]">RELATED NEWS & EVENT RISK</p><h2 className="mt-1 text-lg">{instrument.replace("_", " / ")} headlines</h2></div></div><div className="mt-4 h-[340px] overflow-hidden rounded-xl border border-white/5"><PairNews instrument={instrument}/></div><p className="mt-3 text-[11px] leading-5 text-amber-100/65">Verify the live economic calendar before entry. High-impact events can invalidate technical levels and widen spreads.</p></div>
         </section>
 
         <section className="mt-5 rounded-2xl border border-white/10 bg-[#0c1916] p-4 sm:p-6">
