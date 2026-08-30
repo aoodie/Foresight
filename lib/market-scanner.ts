@@ -77,27 +77,36 @@ export function analyseInstrument(args: {
 
   const bias = directional >= 12 ? "long" : directional <= -12 ? "short" : "neutral";
   const score = Math.round(Math.min(95, 48 + Math.abs(directional) * 0.58));
-  const trend = price > ema20 && ema20 > ema50 ? "trend aligned" : price < ema20 && ema20 < ema50 ? "trend aligned" : "mixed trend";
-  const momentumLabel = Math.abs(momentum) >= 0.8 ? "strong momentum" : Math.abs(momentum) >= 0.35 ? "steady momentum" : "soft momentum";
-  const setup = bias === "neutral" ? "Wait — mixed structure" : (bias === "long" ? "Buy watch" : "Sell watch") + " · " + trend + " · " + momentumLabel;
+  const trend = price > ema20 && ema20 > ema50 ? "clear upward trend" : price < ema20 && ema20 < ema50 ? "clear downward trend" : "mixed trend";
+  const momentumLabel = Math.abs(momentum) >= 0.8 ? "moving strongly" : Math.abs(momentum) >= 0.35 ? "moving steadily" : "moving slowly";
+  const setup = bias === "neutral" ? "Wait — the signals disagree" : (bias === "long" ? "Possible buy" : "Possible sell") + " · " + trend + " · " + momentumLabel;
   const direction = bias === "long" ? 1 : bias === "short" ? -1 : 0;
   const stopDistance = currentAtr * 1.25;
   const entry = direction ? price : null;
   const stopLoss = direction ? price - direction * stopDistance : null;
   const takeProfit1 = direction ? price + direction * stopDistance * 1.5 : null;
   const takeProfit2 = direction ? price + direction * stopDistance * 2.5 : null;
+  const momentumExplanation = currentRsi >= 70
+    ? "Buying has been strong, but the market may be stretched and vulnerable to a pullback."
+    : currentRsi <= 30
+      ? "Selling has been strong, but the market may be stretched and vulnerable to a bounce."
+      : currentRsi >= 55
+        ? "Buyers currently have more momentum than sellers."
+        : currentRsi <= 45
+          ? "Sellers currently have more momentum than buyers."
+          : "Buying and selling pressure are roughly balanced.";
   const reasons = [
-    "Price is " + (price >= ema20 ? "above" : "below") + " the H4 EMA20",
-    "EMA20 is " + (ema20 >= ema50 ? "above" : "below") + " EMA50",
-    "RSI " + currentRsi.toFixed(0) + (currentRsi >= 55 ? " supports bullish momentum" : currentRsi <= 45 ? " supports bearish momentum" : " is neutral"),
-    "24h move is " + change24h.toFixed(2) + "% (" + Math.abs(momentum).toFixed(1) + " ATR)",
+    "Price is trading " + (price >= ema20 ? "above" : "below") + " its recent average, which " + (price >= ema20 ? "favours buyers." : "favours sellers."),
+    "The short-term average is " + (ema20 >= ema50 ? "above" : "below") + " the longer-term average, showing a " + (ema20 >= ema50 ? "rising" : "falling") + " four-hour trend.",
+    momentumExplanation,
+    "Over the last 24 hours, price moved " + Math.abs(change24h).toFixed(2) + "% " + (change24h >= 0 ? "higher" : "lower") + "—about " + Math.abs(momentum).toFixed(1) + " times its normal four-hour movement.",
   ];
   const analysis = bias === "neutral"
-    ? "No clean directional edge: trend and momentum are not sufficiently aligned."
-    : (bias === "long" ? "Bullish" : "Bearish") + " H4 structure with " + momentumLabel + "; wait for intraday confirmation near the reference entry.";
+    ? "There is no clear opportunity yet because the trend and recent price movement disagree."
+    : "The four-hour trend is " + (bias === "long" ? "rising" : "falling") + " and price is " + momentumLabel + ". Do not enter yet; wait for a clear short-term confirmation near a sensible entry level.";
   const invalidation = bias === "neutral"
-    ? "Do not enter until H4 structure becomes directional."
-    : "The setup is invalid if price closes beyond the reference stop or the H4 EMA structure flips.";
+    ? "Wait until the four-hour trend and momentum point in the same direction."
+    : "Ignore this idea if a four-hour candle closes firmly against the trend or the short-term trend turns the other way.";
 
   return {
     instrument: args.instrument,
