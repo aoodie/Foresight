@@ -526,6 +526,9 @@ export default function Home() {
   const marketSetup = scanner?.results.find(
     (item) => item.instrument === instrument,
   );
+  const marketAiPlan = aiData?.strategies.find(
+    (item) => item.instrument === instrument,
+  );
   const isOverview = pathname === "/";
   const isMarkets = pathname.startsWith("/markets");
   const isResearch = pathname.startsWith("/research");
@@ -1497,14 +1500,14 @@ export default function Home() {
                         label="Reference entry"
                         value={formatScannerPrice(
                           instrument,
-                          marketSetup.entry,
+                          marketAiPlan?.entry ?? marketSetup.entry,
                         )}
                       />
                       <PlanLevel
                         label="Stop loss"
                         value={formatScannerPrice(
                           instrument,
-                          marketSetup.stopLoss,
+                          marketAiPlan?.stopLoss ?? marketSetup.stopLoss,
                         )}
                         tone="risk"
                       />
@@ -1512,7 +1515,7 @@ export default function Home() {
                         label="Take profit 1"
                         value={formatScannerPrice(
                           instrument,
-                          marketSetup.takeProfit1,
+                          marketAiPlan?.takeProfit1 ?? marketSetup.takeProfit1,
                         )}
                         tone="reward"
                       />
@@ -1520,7 +1523,7 @@ export default function Home() {
                         label="Take profit 2"
                         value={formatScannerPrice(
                           instrument,
-                          marketSetup.takeProfit2,
+                          marketAiPlan?.takeProfit2 ?? marketSetup.takeProfit2,
                         )}
                         tone="reward"
                       />
@@ -1569,48 +1572,113 @@ export default function Home() {
                       </div>
                       <div className="rounded-xl border border-amber-300/10 bg-amber-300/[.04] p-4">
                         <p className="text-[10px] tracking-[.12em] text-amber-200/80">
-                          ACTIVE TRADE PLAN
+                          AI MARKET ANALYSIS
                         </p>
-                        <p className="mt-2 text-sm font-medium text-white">
-                          {marketSetup.selectedStrategy?.name ??
-                            "No strategy selected yet"}
-                        </p>
-                        <p className="mt-1 text-xs leading-5 text-[#c7d2cc]">
-                          {marketSetup.selectedStrategy?.evidence ??
-                            "The strategy engine is waiting for enough evidence."}
-                        </p>
-                        <p className="mt-2 text-xs leading-5 text-[#a9bdb6]">
-                          Why this plan:{" "}
-                          {marketSetup.selectedStrategy?.why ??
-                            "No valid setup yet."}
-                        </p>
-                        <ol className="mt-3 space-y-2 text-xs leading-5 text-[#c7d2cc]">
-                          <li>
-                            <span className="text-[#89f6bf]">
-                              1. Before entry:
-                            </span>{" "}
-                            {marketSetup.selectedStrategy?.nextStep ??
-                              "Wait for a confirmed trigger."}
-                          </li>
-                          <li>
-                            <span className="text-rose-300">2. Stop:</span> use
-                            the displayed stop only beyond the level that would
-                            disprove this specific strategy.
-                          </li>
-                          <li>
-                            <span className="text-[#89f6bf]">3. TP1:</span>{" "}
-                            first risk/reward checkpoint; take partial profit
-                            only when reached.
-                          </li>
-                          <li>
-                            <span className="text-[#89f6bf]">4. TP2:</span> hold
-                            the remainder only while the selected strategy stays
-                            valid.
-                          </li>
-                        </ol>
-                        <p className="mt-3 text-xs leading-5 text-rose-200/75">
-                          Invalidation: {marketSetup.invalidation}
-                        </p>
+                        {!marketAiPlan && (
+                          <Button
+                            onClick={() =>
+                              aiConnected && marketSetup
+                                ? void generateAiStrategies(
+                                    [marketSetup],
+                                    scanner?.generatedAt ??
+                                      new Date().toISOString(),
+                                  )
+                                : setSettingsOpen(true)
+                            }
+                            disabled={aiLoading}
+                            className="mt-3 w-full bg-[#a4ffcf] text-[#07100f] hover:bg-[#d0ffe1]"
+                          >
+                            <BrainCircuit
+                              className={aiLoading ? "animate-spin" : ""}
+                            />
+                            {aiConnected
+                              ? aiLoading
+                                ? "Analysing this market…"
+                                : "Generate AI analysis"
+                              : "Add AI key in Settings"}
+                          </Button>
+                        )}
+                        {marketAiPlan ? (
+                          <>
+                            <p className="mt-2 text-sm font-medium text-white">
+                              {marketAiPlan.strategyName}
+                            </p>
+                            <p className="mt-1 text-xs leading-5 text-[#c7d2cc]">
+                              {marketAiPlan.analysis}
+                            </p>
+                            <div className="mt-3 flex flex-wrap gap-1.5">
+                              {marketAiPlan.methodology.map((method) => (
+                                <span
+                                  key={method}
+                                  className="rounded-full border border-[#a4ffcf]/15 bg-[#a4ffcf]/[.06] px-2 py-1 text-[10px] text-[#89f6bf]"
+                                >
+                                  {method}
+                                </span>
+                              ))}
+                            </div>
+                            <p className="mt-3 text-xs leading-5 text-[#a9bdb6]">
+                              <span className="text-[#89f6bf]">
+                                Entry trigger:
+                              </span>{" "}
+                              {marketAiPlan.trigger}
+                            </p>
+                            <ul className="mt-3 space-y-1 text-xs leading-5 text-[#a9bdb6]">
+                              {marketAiPlan.reasons.map((reason) => (
+                                <li key={reason}>• {reason}</li>
+                              ))}
+                            </ul>
+                            <p className="mt-3 text-xs leading-5 text-amber-100/75">
+                              <span className="text-amber-200">News risk:</span>{" "}
+                              {marketAiPlan.eventRisk}
+                            </p>
+                            <p className="mt-2 text-xs leading-5 text-rose-200/75">
+                              Invalidation: {marketAiPlan.invalidation}
+                            </p>
+                          </>
+                        ) : (
+                          <>
+                            <p className="mt-2 text-sm font-medium text-white">
+                              {marketSetup.selectedStrategy?.name ??
+                                "No strategy selected yet"}
+                            </p>
+                            <p className="mt-1 text-xs leading-5 text-[#c7d2cc]">
+                              {marketSetup.selectedStrategy?.evidence ??
+                                "The strategy engine is waiting for enough evidence."}
+                            </p>
+                            <p className="mt-2 text-xs leading-5 text-[#a9bdb6]">
+                              Why this plan:{" "}
+                              {marketSetup.selectedStrategy?.why ??
+                                "No valid setup yet."}
+                            </p>
+                            <ol className="mt-3 space-y-2 text-xs leading-5 text-[#c7d2cc]">
+                              <li>
+                                <span className="text-[#89f6bf]">
+                                  1. Before entry:
+                                </span>{" "}
+                                {marketSetup.selectedStrategy?.nextStep ??
+                                  "Wait for a confirmed trigger."}
+                              </li>
+                              <li>
+                                <span className="text-rose-300">2. Stop:</span>{" "}
+                                use the displayed stop only beyond the level
+                                that would disprove this specific strategy.
+                              </li>
+                              <li>
+                                <span className="text-[#89f6bf]">3. TP1:</span>{" "}
+                                first risk/reward checkpoint; take partial
+                                profit only when reached.
+                              </li>
+                              <li>
+                                <span className="text-[#89f6bf]">4. TP2:</span>{" "}
+                                hold the remainder only while the selected
+                                strategy stays valid.
+                              </li>
+                            </ol>
+                            <p className="mt-3 text-xs leading-5 text-rose-200/75">
+                              Invalidation: {marketSetup.invalidation}
+                            </p>
+                          </>
+                        )}
                       </div>
                     </div>
                   </>
