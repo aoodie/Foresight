@@ -59,6 +59,34 @@ type Quote = {
   tradeable: boolean;
   marketStatus: string;
   environment: "practice" | "live";
+  homeConversionFactors?: { positiveUnits: number; negativeUnits: number };
+};
+type AccountSummary = {
+  accountId: string;
+  currency: string;
+  balance: number;
+  equity: number;
+  marginAvailable: number | null;
+  openTradeCount: number;
+  openPositionCount: number;
+};
+type OpenTrade = {
+  id: string;
+  instrument: string;
+  price: number;
+  openTime: string | null;
+  units: number;
+  unrealizedPL: number;
+  stopLoss: number | null;
+  takeProfit: number | null;
+};
+type TradeReview = {
+  drifted: boolean;
+  decision: "hold" | "review" | "reduce" | "close";
+  confidence: number;
+  explanation: string;
+  recommendedAction: string;
+  reviewedAt: string;
 };
 type StrategyEvidence = {
   id: string;
@@ -217,6 +245,10 @@ export default function Home() {
   const [message, setMessage] = useState("");
   const [data, setData] = useState<MarketData | null>(null);
   const [quote, setQuote] = useState<Quote | null>(null);
+  const [account, setAccount] = useState<AccountSummary | null>(null);
+  const [openTrades, setOpenTrades] = useState<OpenTrade[]>([]);
+  const [tradeReview, setTradeReview] = useState<TradeReview | null>(null);
+  const [monitorStatus, setMonitorStatus] = useState("");
   const [scanner, setScanner] = useState<ScannerData | null>(null);
   const [scanMode, setScanMode] = useState<"scalping" | "intraday" | "swing">(
     "intraday",
@@ -235,10 +267,12 @@ export default function Home() {
   >({});
   const [aiHydrated, setAiHydrated] = useState(false);
   const [executionMode, setExecutionMode] = useState<"paper" | "live">("paper");
-  const [orderUnits, setOrderUnits] = useState("1000");
+  const [riskPercent, setRiskPercent] = useState("0.5");
   const [orderStatus, setOrderStatus] = useState("");
   const [liveConfirm, setLiveConfirm] = useState(false);
   const scanRequested = useRef(false);
+  const reviewMemory = useRef<Record<string, { price: number; at: number }>>({});
+  const reviewBusy = useRef(false);
 
   useEffect(() => {
     try {
@@ -426,6 +460,26 @@ export default function Home() {
     [instrument],
   );
 
+  const refreshAccount = useCallback(async () => {
+    try {
+      const response = await fetch("/api/oanda/account?t=" + Date.now(), { cache: "no-store" });
+      const payload = await response.json();
+      if (response.ok && payload.connected) setAccount(payload);
+    } catch {
+      // Account data is supplementary; the quote and scanner can continue without it.
+    }
+  }, []);
+
+  const refreshTrades = useCallback(async () => {
+    try {
+      const response = await fetch("/api/oanda/trades?t=" + Date.now(), { cache: "no-store" });
+      const payload = await response.json();
+      if (response.ok && payload.connected) setOpenTrades(Array.isArray(payload.trades) ? payload.trades : []);
+    } catch {
+      // The next polling cycle will retry without interrupting the trade screen.
+    }
+  }, []);
+
   useEffect(() => {
     let active = true;
     (async () => {
@@ -438,7 +492,7 @@ export default function Home() {
         if (response.ok && payload.connected) {
           setEnvironment(payload.environment);
           setConnection("configured");
-          await Promise.all([refreshCandles(), refreshQuote()]);
+          await Promise.all([refreshCandles(), refreshQuote(), refreshAccount()]);
         } else {
           setConnection("disconnected");
         }
@@ -449,7 +503,7 @@ export default function Home() {
     return () => {
       active = false;
     };
-  }, [refreshCandles, refreshQuote]);
+  }, [refreshAccount, refreshCandles, refreshQuote]);
 
   useEffect(() => {
     let active = true;
@@ -473,6 +527,16 @@ export default function Home() {
     }, 2000);
     return () => window.clearInterval(timer);
   }, [connection, refreshQuote]);
+
+  useEffect(() => {
+    if (executionMode !== "live" || (connection !== "connected" && connection !== "configured")) return;
+    const first = window.setTimeout(() => void refreshTrades(), 0);
+    const timer = window.setInterval(() => void refreshTrades(), 5000);
+    return () => {
+      window.clearTimeout(first);
+      window.clearInterval(timer);
+    };
+  }, [connection, executionMode, refreshTrades]);
 
   useEffect(() => {
     if (pathname !== "/" || connection !== "connected" || scanRequested.current)
@@ -534,7 +598,7 @@ export default function Home() {
       setMessage("");
       setSettingsOpen(false);
       setConnection("configured");
-      await Promise.all([refreshCandles(), refreshQuote()]);
+      await Promise.all([refreshCandles(), refreshQuote(), refreshAccount()]);
     } catch (error) {
       setConnection("error");
       setMessage(
@@ -598,8 +662,82 @@ export default function Home() {
   const marketAiPlan = aiData?.strategies.find(
     (item) => item.instrument === instrument,
   );
+  const planEntry = marketAiPlan?.entry ?? marketSetup?.entry ?? null;
+  const planStop = marketAiPlan?.stopLoss ?? marketSetup?.stopLoss ?? null;
+  const planTp1 = marketAiPlan?.takeProfit1 ?? marketSetup?.takeProfit1 ?? null;
+  const planTp2 = marketAiPlan?.takeProfit2 ?? marketSetup?.takeProfit2 ?? null;
+  const direction = marketSetup?.bias === "short" || marketAiPlan?.verdict === "short" ? "short" : "long";
+  const stopDistance = planEntry !== null && planStop !== null ? Math.abs(planEntry - planStop) : null;
+  const tp1Distance = planEntry !== null && planTp1 !== null ? Math.abs(planTp1 - planEntry) : null;
+  const tp2Distance = planEntry !== null && planTp2 !== null ? Math.abs(planTp2 - planEntry) : null;
+  const parsedRiskPercent = Number(riskPercent);
+  const validRiskPercent = Number.isFinite(parsedRiskPercent) && parsedRiskPercent > 0 && parsedRiskPercent <= 5;
+  const riskAmount = account && validRiskPercent ? account.equity * parsedRiskPercent / 100 : null;
+  const conversion = quote?.homeConversionFactors?.[direction === "short" ? "negativeUnits" : "positiveUnits"] ?? null;
+  const cashRiskPerUnit = stopDistance !== null && conversion !== null ? stopDistance * conversion : null;
+  const calculatedUnits = riskAmount !== null && cashRiskPerUnit !== null && cashRiskPerUnit > 0
+    ? Math.max(0, Math.floor(riskAmount / cashRiskPerUnit))
+    : 0;
+  const calculatedLots = marketSetup?.assetClass === "forex" ? calculatedUnits / 100000 : null;
+  const slPips = stopDistance === null ? null : stopDistance * pipMultiplier(instrument);
+  const tp1Pips = tp1Distance === null ? null : tp1Distance * pipMultiplier(instrument);
+  const tp2Pips = tp2Distance === null ? null : tp2Distance * pipMultiplier(instrument);
+  const estimatedRisk = calculatedUnits && cashRiskPerUnit !== null ? calculatedUnits * cashRiskPerUnit : null;
+  const estimatedTp1 = calculatedUnits && tp1Distance !== null && conversion !== null ? calculatedUnits * tp1Distance * conversion : null;
+  const estimatedTp2 = calculatedUnits && tp2Distance !== null && conversion !== null ? calculatedUnits * tp2Distance * conversion : null;
+  const monitoredTrade = openTrades.find((trade) => trade.instrument === instrument) ?? null;
+
+  useEffect(() => {
+    if (!monitoredTrade || !marketAiPlan || !marketSetup || !aiConnected || reviewBusy.current) return;
+    const currentPrice = quote?.mid ?? monitoredTrade.price;
+    const previous = reviewMemory.current[monitoredTrade.id];
+    const volatilityMove = Math.max(currentPrice * (marketSetup.atrPercent / 100) * 0.25, currentPrice * 0.0005);
+    const meaningfulMove = !previous || Math.abs(currentPrice - previous.price) >= volatilityMove;
+    if (!meaningfulMove) return;
+    const timer = window.setTimeout(() => {
+      const latest = reviewMemory.current[monitoredTrade.id];
+      if (reviewBusy.current || (latest && Date.now() - latest.at < 300000)) return;
+      reviewMemory.current[monitoredTrade.id] = { price: currentPrice, at: Date.now() };
+      reviewBusy.current = true;
+      setMonitorStatus("Reviewing the open trade against its strategy…");
+      void fetch("/api/ai/review", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        trade: monitoredTrade,
+        currentPrice,
+        style: scanMode,
+        timeframes: scanner?.timeframes ?? null,
+        strategy: marketAiPlan,
+        technicalSnapshot: {
+          score: marketSetup.score,
+          bias: marketSetup.bias,
+          rsi: marketSetup.rsi,
+          atrPercent: marketSetup.atrPercent,
+          timeframeAlignment: marketSetup.timeframeAlignment,
+          selectedStrategy: marketSetup.selectedStrategy,
+        },
+      }),
+      }).then(async (response) => {
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "Trade review failed.");
+        setTradeReview(payload);
+        setMonitorStatus(payload.drifted ? "Strategy drift detected — review required." : "Strategy still matches the open trade.");
+      }).catch((error: unknown) => {
+        setMonitorStatus(error instanceof Error ? error.message : "Trade review failed.");
+      }).finally(() => {
+        reviewBusy.current = false;
+      });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [aiConnected, marketAiPlan, marketSetup, monitoredTrade, quote?.mid, scanMode, scanner?.timeframes]);
+
   const submitOrder = async () => {
     if (!marketSetup) return;
+    if (!calculatedUnits) {
+      setOrderStatus("Waiting for account equity, a valid stop distance and a valid risk percentage.");
+      return;
+    }
     setOrderStatus("Submitting order…");
     try {
       const response = await fetch("/api/oanda/order", {
@@ -607,11 +745,10 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           instrument: marketSetup.instrument,
-          units:
-            (marketSetup.bias === "short" ? -1 : 1) *
-            Math.abs(Number(orderUnits)),
-          stopLoss: marketAiPlan?.stopLoss ?? marketSetup.stopLoss,
-          takeProfit: marketAiPlan?.takeProfit1 ?? marketSetup.takeProfit1,
+          units: (direction === "short" ? -1 : 1) * calculatedUnits,
+          stopLoss: planStop,
+          takeProfit: planTp1,
+          riskPercent: parsedRiskPercent,
           mode: executionMode,
           confirmLive: liveConfirm,
         }),
@@ -622,6 +759,7 @@ export default function Home() {
       setOrderStatus(
         `${payload.mode === "paper" ? "Paper order simulated" : "Live order submitted"} · ${payload.orderId ?? "no ID"}`,
       );
+      if (payload.mode === "live") void refreshTrades();
       setLiveConfirm(false);
     } catch (error) {
       setOrderStatus(
@@ -1687,6 +1825,23 @@ export default function Home() {
                         </p>
                         <div className="mt-3 grid gap-3 sm:grid-cols-2">
                           <Select
+                            value={scanMode}
+                            onValueChange={(value) => {
+                              setScanMode(value as typeof scanMode);
+                              setTradeReview(null);
+                              setOrderStatus("Trading style changed. Run the scan to refresh its strategy and levels.");
+                            }}
+                          >
+                            <SelectTrigger className="border-white/10 bg-[#10221d] text-white">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="scalping">Scalping · M5 entry</SelectItem>
+                              <SelectItem value="intraday">Intraday · M15 entry</SelectItem>
+                              <SelectItem value="swing">Swing · M15 entry</SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <Select
                             value={executionMode}
                             onValueChange={(value) => {
                               setExecutionMode(value as "paper" | "live");
@@ -1706,20 +1861,37 @@ export default function Home() {
                             </SelectContent>
                           </Select>
                           <input
-                            aria-label="Order units"
-                            value={orderUnits}
-                            onChange={(event) =>
-                              setOrderUnits(event.target.value)
-                            }
-                            inputMode="numeric"
+                            aria-label="Risk percentage"
+                            value={riskPercent}
+                            onChange={(event) => {
+                              setRiskPercent(event.target.value);
+                            }}
+                            inputMode="decimal"
                             className="h-10 rounded-md border border-white/10 bg-[#10221d] px-3 text-sm text-white"
-                            placeholder="Units"
+                            placeholder="Risk % (e.g. 0.5)"
                           />
                         </div>
                         <p className="mt-3 text-xs text-[#a9bdb6]">
                           {marketSetup
-                            ? `${marketSetup.bias.toUpperCase()} ${marketSetup.instrument} · Entry ${formatScannerPrice(marketSetup.instrument, marketAiPlan?.entry ?? marketSetup.entry)} · SL ${formatScannerPrice(marketSetup.instrument, marketAiPlan?.stopLoss ?? marketSetup.stopLoss)} · TP1 ${formatScannerPrice(marketSetup.instrument, marketAiPlan?.takeProfit1 ?? marketSetup.takeProfit1)}`
+                            ? `${direction.toUpperCase()} ${marketSetup.instrument} · ${scanMode} · Entry ${formatScannerPrice(marketSetup.instrument, planEntry)} · SL ${formatScannerPrice(marketSetup.instrument, planStop)} · TP1 ${formatScannerPrice(marketSetup.instrument, planTp1)}`
                             : "Run the scanner to prepare an order."}
+                        </p>
+                        <div className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
+                          <PlanLevel label="Account equity" value={account ? `${account.currency} ${account.equity.toFixed(2)}` : "Loading…"} />
+                          <PlanLevel label="Risk amount" value={riskAmount !== null ? `${account?.currency ?? ""} ${riskAmount.toFixed(2)}` : "—"} />
+                          <PlanLevel label="Calculated size" value={calculatedUnits ? `${calculatedUnits.toLocaleString()} units` : "—"} />
+                          <PlanLevel label="Lots" value={calculatedLots !== null ? calculatedLots.toFixed(2) : marketSetup?.assetClass ? "N/A for CFD" : "—"} />
+                          <PlanLevel label="SL distance" value={slPips !== null ? `${slPips.toFixed(instrument.endsWith("_JPY") ? 1 : 1)} ${marketSetup?.assetClass === "forex" ? "pips" : "points"}` : "—"} tone="risk" />
+                          <PlanLevel label="TP1 distance" value={tp1Pips !== null ? `${tp1Pips.toFixed(1)} ${marketSetup?.assetClass === "forex" ? "pips" : "points"}` : "—"} tone="reward" />
+                          <PlanLevel label="TP2 distance" value={tp2Pips !== null ? `${tp2Pips.toFixed(1)} ${marketSetup?.assetClass === "forex" ? "pips" : "points"}` : "—"} tone="reward" />
+                        </div>
+                        <div className="mt-3 rounded-lg border border-white/8 bg-black/15 p-3 text-xs leading-5 text-[#a9bdb6]">
+                          <p><span className="text-rose-200">Stop loss:</span> {planStop !== null ? formatScannerPrice(instrument, planStop) : "—"} · estimated risk {estimatedRisk !== null ? `${account?.currency ?? ""} ${estimatedRisk.toFixed(2)}` : "—"}</p>
+                          <p><span className="text-sky-200">Take profit 1:</span> {planTp1 !== null ? formatScannerPrice(instrument, planTp1) : "—"} · estimated return {estimatedTp1 !== null ? `${account?.currency ?? ""} ${estimatedTp1.toFixed(2)}` : "—"}</p>
+                          <p><span className="text-violet-200">Take profit 2:</span> {planTp2 !== null ? formatScannerPrice(instrument, planTp2) : "—"} · estimated return {estimatedTp2 !== null ? `${account?.currency ?? ""} ${estimatedTp2.toFixed(2)}` : "—"}</p>
+                        </div>
+                        <p className="mt-2 text-[11px] leading-4 text-[#71887f]">
+                          Position size is calculated from account equity, your risk percentage, the selected strategy’s stop distance and OANDA’s home-currency conversion rate. No fixed unit size is used.
                         </p>
                         {executionMode === "live" && (
                           <label className="mt-3 flex items-start gap-2 text-xs text-amber-100/80">
@@ -1738,7 +1910,8 @@ export default function Home() {
                           onClick={() => void submitOrder()}
                           disabled={
                             !marketSetup ||
-                            !Number(orderUnits) ||
+                            !calculatedUnits ||
+                            !validRiskPercent ||
                             (executionMode === "live" && !liveConfirm)
                           }
                           className="mt-3 w-full bg-[#a4ffcf] text-[#07100f] hover:bg-[#d0ffe1]"
@@ -1751,6 +1924,29 @@ export default function Home() {
                           <p className="mt-2 text-xs text-[#89f6bf]">
                             {orderStatus}
                           </p>
+                        )}
+                        {executionMode === "live" && (
+                          <div className={(tradeReview?.drifted ? "border-rose-300/30 bg-rose-300/[.08]" : "border-[#a4ffcf]/15 bg-[#a4ffcf]/[.04]") + " mt-3 rounded-lg border p-3 text-xs leading-5"}>
+                            <p className="font-medium text-white">
+                              Live trade monitor {monitoredTrade ? `· ${monitoredTrade.id}` : "· no open trade on this market"}
+                            </p>
+                            {monitoredTrade ? (
+                              <>
+                                <p className="mt-1 text-[#a9bdb6]">
+                                  OANDA trade: {monitoredTrade.units > 0 ? "long" : "short"} {Math.abs(monitoredTrade.units).toLocaleString()} units · open {formatScannerPrice(instrument, monitoredTrade.price)} · unrealised {monitoredTrade.unrealizedPL.toFixed(2)} {account?.currency ?? ""}
+                                </p>
+                                <p className={tradeReview?.drifted ? "mt-1 text-rose-200" : "mt-1 text-[#89f6bf]"}>
+                                  {tradeReview ? `${tradeReview.decision.toUpperCase()}: ${tradeReview.explanation}` : monitorStatus || "Rule monitor is checking for a meaningful strategy change."}
+                                </p>
+                                {tradeReview?.drifted && <p className="mt-1 text-rose-200">Recommended action: {tradeReview.recommendedAction}</p>}
+                                <p className="mt-1 text-[10px] text-[#71887f]">
+                                  Rule checks poll every 5 seconds. AI re-checks only after a meaningful move and no more than once every 5 minutes; it never closes or changes an order automatically.
+                                </p>
+                              </>
+                            ) : (
+                              <p className="mt-1 text-[#a9bdb6]">{monitorStatus || "Waiting for an open OANDA trade."}</p>
+                            )}
+                          </div>
                         )}
                       </div>
                       <div className="rounded-xl border border-amber-300/10 bg-amber-300/[.04] p-4">
@@ -1901,7 +2097,7 @@ export default function Home() {
                   <p className="text-xs tracking-[.14em] text-[#8aa29a]">
                     INTERACTIVE ANALYSIS
                   </p>
-                  <h2 className="mt-1 text-lg">TradingView Advanced Chart</h2>
+                  <h2 className="mt-1 text-lg">TradingView chart with live levels</h2>
                 </div>
                 <div className="text-xs text-[#81978f]">
                   {instrument.replace("_", " / ")} · {granularity} · TradingView
@@ -1911,6 +2107,7 @@ export default function Home() {
               <TradingViewChart
                 instrument={instrument}
                 granularity={granularity}
+                candles={data?.candles}
                 levels={
                   marketSetup
                     ? {
@@ -1926,10 +2123,9 @@ export default function Home() {
                 }
               />
               <p className="mt-3 text-[11px] leading-5 text-[#71887f]">
-                Charting and indicator data are supplied by TradingView and may
-                differ slightly from the OANDA account quote shown above. The
-                chart includes EMA, RSI and VWAP; VWAP is a visual intraday
-                fair-value reference.
+                Candles are fetched from OANDA and rendered with TradingView
+                Lightweight Charts. Entry, stop loss and take-profit lines are
+                actual chart overlays tied to the selected strategy.
               </p>
             </section>
 

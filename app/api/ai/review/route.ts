@@ -1,0 +1,20 @@
+import { headers } from "next/headers";
+import { NextResponse } from "next/server";
+import { getAiKey } from "@/lib/ai-secret";
+import { reviewLiveTrade } from "@/lib/openai-strategy";
+
+async function ownerRequest() { return Boolean((await headers()).get("oai-authenticated-user-email")); }
+
+export async function POST(request: Request) {
+  if (!(await ownerRequest())) return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
+  const connection = await getAiKey();
+  if (!connection) return NextResponse.json({ error: "Add an OpenAI API key in Settings before monitoring a trade." }, { status: 503 });
+  const body = await request.json().catch(() => null);
+  if (!body || typeof body !== "object") return NextResponse.json({ error: "Trade review data is missing." }, { status: 400 });
+  try {
+    const review = await reviewLiveTrade(connection.apiKey, connection.model, body);
+    return NextResponse.json({ ...review, reviewedAt: new Date().toISOString(), model: connection.model });
+  } catch (error) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : "Unable to review the open trade." }, { status: 502 });
+  }
+}
