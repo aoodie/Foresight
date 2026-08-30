@@ -234,6 +234,10 @@ export default function Home() {
     Record<string, number>
   >({});
   const [aiHydrated, setAiHydrated] = useState(false);
+  const [executionMode, setExecutionMode] = useState<"paper" | "live">("paper");
+  const [orderUnits, setOrderUnits] = useState("1000");
+  const [orderStatus, setOrderStatus] = useState("");
+  const [liveConfirm, setLiveConfirm] = useState(false);
   const scanRequested = useRef(false);
 
   useEffect(() => {
@@ -594,6 +598,39 @@ export default function Home() {
   const marketAiPlan = aiData?.strategies.find(
     (item) => item.instrument === instrument,
   );
+  const submitOrder = async () => {
+    if (!marketSetup) return;
+    setOrderStatus("Submitting order…");
+    try {
+      const response = await fetch("/api/oanda/order", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          instrument: marketSetup.instrument,
+          units:
+            (marketSetup.bias === "short" ? -1 : 1) *
+            Math.abs(Number(orderUnits)),
+          stopLoss: marketAiPlan?.stopLoss ?? marketSetup.stopLoss,
+          takeProfit: marketAiPlan?.takeProfit1 ?? marketSetup.takeProfit1,
+          mode: executionMode,
+          confirmLive: liveConfirm,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok)
+        throw new Error(payload.error || "Order could not be submitted.");
+      setOrderStatus(
+        `${payload.mode === "paper" ? "Paper order simulated" : "Live order submitted"} · ${payload.orderId ?? "no ID"}`,
+      );
+      setLiveConfirm(false);
+    } catch (error) {
+      setOrderStatus(
+        error instanceof Error
+          ? error.message
+          : "Order could not be submitted.",
+      );
+    }
+  };
   const isOverview = pathname === "/";
   const isMarkets = pathname.startsWith("/markets");
   const isResearch = pathname.startsWith("/research");
@@ -1643,6 +1680,78 @@ export default function Home() {
                             </div>
                           ))}
                         </div>
+                      </div>
+                      <div className="mt-4 rounded-xl border border-[#a4ffcf]/15 bg-[#07100f] p-4">
+                        <p className="text-[10px] tracking-[.12em] text-[#89f6bf]">
+                          AUTO-TRADE
+                        </p>
+                        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                          <Select
+                            value={executionMode}
+                            onValueChange={(value) => {
+                              setExecutionMode(value as "paper" | "live");
+                              setLiveConfirm(false);
+                            }}
+                          >
+                            <SelectTrigger className="border-white/10 bg-[#10221d] text-white">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="paper">
+                                Paper trading (safe)
+                              </SelectItem>
+                              <SelectItem value="live">
+                                Live OANDA (locked)
+                              </SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <input
+                            aria-label="Order units"
+                            value={orderUnits}
+                            onChange={(event) =>
+                              setOrderUnits(event.target.value)
+                            }
+                            inputMode="numeric"
+                            className="h-10 rounded-md border border-white/10 bg-[#10221d] px-3 text-sm text-white"
+                            placeholder="Units"
+                          />
+                        </div>
+                        <p className="mt-3 text-xs text-[#a9bdb6]">
+                          {marketSetup
+                            ? `${marketSetup.bias.toUpperCase()} ${marketSetup.instrument} · Entry ${formatScannerPrice(marketSetup.instrument, marketAiPlan?.entry ?? marketSetup.entry)} · SL ${formatScannerPrice(marketSetup.instrument, marketAiPlan?.stopLoss ?? marketSetup.stopLoss)} · TP1 ${formatScannerPrice(marketSetup.instrument, marketAiPlan?.takeProfit1 ?? marketSetup.takeProfit1)}`
+                            : "Run the scanner to prepare an order."}
+                        </p>
+                        {executionMode === "live" && (
+                          <label className="mt-3 flex items-start gap-2 text-xs text-amber-100/80">
+                            <input
+                              type="checkbox"
+                              checked={liveConfirm}
+                              onChange={(event) =>
+                                setLiveConfirm(event.target.checked)
+                              }
+                              className="mt-0.5"
+                            />
+                            I understand this can place a real OANDA order.
+                          </label>
+                        )}
+                        <Button
+                          onClick={() => void submitOrder()}
+                          disabled={
+                            !marketSetup ||
+                            !Number(orderUnits) ||
+                            (executionMode === "live" && !liveConfirm)
+                          }
+                          className="mt-3 w-full bg-[#a4ffcf] text-[#07100f] hover:bg-[#d0ffe1]"
+                        >
+                          {executionMode === "paper"
+                            ? "Simulate paper order"
+                            : "Submit live order"}
+                        </Button>
+                        {orderStatus && (
+                          <p className="mt-2 text-xs text-[#89f6bf]">
+                            {orderStatus}
+                          </p>
+                        )}
                       </div>
                       <div className="rounded-xl border border-amber-300/10 bg-amber-300/[.04] p-4">
                         <p className="text-[10px] tracking-[.12em] text-amber-200/80">
