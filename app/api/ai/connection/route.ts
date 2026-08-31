@@ -8,7 +8,7 @@ async function ownerRequest() { return Boolean((await headers()).get("oai-authen
 export async function GET() {
   if (!(await ownerRequest())) return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
   const connection = await getAiKey();
-  return NextResponse.json({ connected: Boolean(connection), model: connection?.model ?? "gpt-5.5", baseUrl: connection?.baseUrl ?? defaultAiBaseUrl, updatedAt: connection?.updatedAt ?? null });
+  return NextResponse.json({ connected: Boolean(connection), model: connection?.model ?? "", baseUrl: connection?.baseUrl ?? defaultAiBaseUrl, updatedAt: connection?.updatedAt ?? null });
 }
 
 export async function POST(request: Request) {
@@ -17,8 +17,8 @@ export async function POST(request: Request) {
   const existing = await getAiKey();
   const apiKey = body.apiKey?.trim() || existing?.apiKey;
   if (!apiKey) return NextResponse.json({ error: "Enter an API key for the selected LLM provider." }, { status: 400 });
-  const model = body.model?.trim() || existing?.model || "gpt-5.5";
-  if (!/^[A-Za-z0-9._:/-]{1,100}$/.test(model)) return NextResponse.json({ error: "Enter a valid model ID." }, { status: 400 });
+  const model = body.model?.trim() ?? existing?.model ?? "";
+  if (model && !/^[A-Za-z0-9._:/-]{1,100}$/.test(model)) return NextResponse.json({ error: "Enter a valid model ID." }, { status: 400 });
   let baseUrl: string;
   try {
     baseUrl = normalizeAiBaseUrl(body.baseUrl || existing?.baseUrl || defaultAiBaseUrl);

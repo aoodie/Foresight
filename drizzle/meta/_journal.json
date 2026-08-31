@@ -43,6 +43,13 @@
       "when": 1788135269685,
       "tag": "0005_custom_llm_base_url",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1788136141253,
+      "tag": "0006_clear_legacy_openai_model",
+      "breakpoints": true
     }
   ]
 }

@@ -88,7 +88,7 @@ Scripts that need writable project-scoped home, npm, XDG, and temporary paths us
 
 ## Workspace Auth Headers
 
-OpenAI workspace sites can read the current user's email from
+Workspace Sites can read the current user's email from
 `oai-authenticated-user-email`.
 
 SIWC-authenticated workspace sites may also receive

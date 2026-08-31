@@ -301,7 +301,7 @@ export default function Home() {
   const [scanning, setScanning] = useState(false);
   const [scannerError, setScannerError] = useState("");
   const [aiKey, setAiKey] = useState("");
-  const [aiModel, setAiModel] = useState("gpt-5.5");
+  const [aiModel, setAiModel] = useState("");
   const [aiBaseUrl, setAiBaseUrl] = useState("https://api.aoodie.xyz/v1");
   const [aiConnected, setAiConnected] = useState(false);
   const [aiSaving, setAiSaving] = useState(false);
@@ -1073,7 +1073,7 @@ export default function Home() {
               className="h-10 rounded-md border border-white/10 bg-[#10221d] px-3 text-sm outline-none focus:border-[#a4ffcf]"
             />
             <p className="text-[11px] text-[#71887f]">
-              OpenAI-compatible base URL used for model checks and analysis requests.
+              Base URL used for model checks and analysis requests.
             </p>
             <label className="mt-2 text-sm text-[#a9bdb6]">
               LLM model ID
@@ -1083,19 +1083,11 @@ export default function Home() {
               onChange={(event) => setAiModel(event.target.value)}
               type="text"
               autoComplete="off"
-              list="foresight-model-options"
-              placeholder="e.g. gpt-5.5"
+              placeholder="Leave blank for the gateway default"
               className="h-10 rounded-md border border-white/10 bg-[#10221d] px-3 text-sm outline-none focus:border-[#a4ffcf]"
             />
-            <datalist id="foresight-model-options">
-              <option value="gpt-5.5" />
-              <option value="gpt-5" />
-              <option value="gpt-5-mini" />
-              <option value="gpt-4.1" />
-              <option value="gpt-4.1-mini" />
-            </datalist>
             <p className="text-[11px] text-[#71887f]">
-              Enter any model ID available to your API key. It is checked before saving.
+              Enter the model ID configured in your custom gateway, or leave it blank to let the gateway choose.
             </p>
             <label className="mt-2 text-sm text-[#a9bdb6]">
               LLM API key
@@ -1114,7 +1106,7 @@ export default function Home() {
             />
             <Button
               onClick={saveAiConnection}
-              disabled={aiSaving || !aiModel.trim() || !aiBaseUrl.trim() || (!aiKey && !aiConnected)}
+              disabled={aiSaving || !aiBaseUrl.trim() || (!aiKey && !aiConnected)}
               className="bg-white/10 text-white hover:bg-white/15"
             >
               <Sparkles className={aiSaving ? "animate-spin" : ""} />
@@ -1419,7 +1411,7 @@ export default function Home() {
                       Three strategies explained in plain English
                     </h2>
                     <p className="mt-1 text-xs text-[#71887f]">
-                      OpenAI combines aligned timeframes with multiple
+                      The LLM combines aligned timeframes with multiple
                       LuxAlgo-grounded confirmations and may recommend waiting.
                     </p>
                   </div>
@@ -1587,7 +1579,7 @@ export default function Home() {
                                 <p className="mt-3 text-sm text-[#a9bdb6]">
                                   {aiLoading
                                     ? "LuxAlgo MCP and the LLM are designing entry, stop and targets…"
-                                    : "Add an OpenAI API key in Settings to generate this strategy."}
+                                    : "Connect your custom LLM provider in Settings to generate this strategy."}
                                 </p>
                               </div>
                             </div>
