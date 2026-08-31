@@ -302,6 +302,7 @@ export default function Home() {
   const [scannerError, setScannerError] = useState("");
   const [aiKey, setAiKey] = useState("");
   const [aiModel, setAiModel] = useState("gpt-5.5");
+  const [aiBaseUrl, setAiBaseUrl] = useState("https://api.aoodie.xyz/v1");
   const [aiConnected, setAiConnected] = useState(false);
   const [aiSaving, setAiSaving] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
@@ -576,6 +577,7 @@ export default function Home() {
         if (active) {
           setAiConnected(Boolean(response.ok && payload.connected));
           if (typeof payload.model === "string") setAiModel(payload.model);
+          if (typeof payload.baseUrl === "string") setAiBaseUrl(payload.baseUrl);
         }
       })
       .catch(() => {
@@ -693,11 +695,11 @@ export default function Home() {
       const response = await fetch("/api/ai/connection", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKey: aiKey || undefined, model: aiModel.trim() }),
+        body: JSON.stringify({ apiKey: aiKey || undefined, model: aiModel.trim(), baseUrl: aiBaseUrl.trim() }),
       });
       const payload = await response.json();
       if (!response.ok)
-        throw new Error(payload.error || "OpenAI rejected this API key.");
+        throw new Error(payload.error || "The LLM provider rejected these settings.");
       setAiKey("");
       setAiConnected(true);
       if (typeof payload.model === "string") setAiModel(payload.model);
@@ -709,7 +711,7 @@ export default function Home() {
       setAiError(
         error instanceof Error
           ? error.message
-          : "Unable to save this OpenAI API key.",
+          : "Unable to save these LLM settings.",
       );
     } finally {
       setAiSaving(false);
@@ -1050,7 +1052,7 @@ export default function Home() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-semibold">
-                  OpenAI strategy analysis
+                  LLM strategy analysis
                 </p>
                 <p className="mt-1 text-xs text-[#81978f]">
                   Choose the model used for strategy cards and live-trade reviews.
@@ -1060,7 +1062,21 @@ export default function Home() {
               <StatusDot connected={aiConnected} />
             </div>
             <label className="mt-2 text-sm text-[#a9bdb6]">
-              OpenAI model ID
+              LLM API base URL
+            </label>
+            <input
+              value={aiBaseUrl}
+              onChange={(event) => setAiBaseUrl(event.target.value)}
+              type="url"
+              autoComplete="off"
+              placeholder="https://api.aoodie.xyz/v1"
+              className="h-10 rounded-md border border-white/10 bg-[#10221d] px-3 text-sm outline-none focus:border-[#a4ffcf]"
+            />
+            <p className="text-[11px] text-[#71887f]">
+              OpenAI-compatible base URL used for model checks and analysis requests.
+            </p>
+            <label className="mt-2 text-sm text-[#a9bdb6]">
+              LLM model ID
             </label>
             <input
               value={aiModel}
@@ -1082,7 +1098,7 @@ export default function Home() {
               Enter any model ID available to your API key. It is checked before saving.
             </p>
             <label className="mt-2 text-sm text-[#a9bdb6]">
-              OpenAI API key
+              LLM API key
             </label>
             <input
               value={aiKey}
@@ -1092,13 +1108,13 @@ export default function Home() {
               placeholder={
                 aiConnected
                   ? "Connected — paste to replace key"
-                  : "Paste your OpenAI API key"
+                  : "Paste your LLM API key"
               }
               className="h-10 rounded-md border border-white/10 bg-[#10221d] px-3 text-sm outline-none focus:border-[#a4ffcf]"
             />
             <Button
               onClick={saveAiConnection}
-              disabled={aiSaving || !aiModel.trim() || (!aiKey && !aiConnected)}
+              disabled={aiSaving || !aiModel.trim() || !aiBaseUrl.trim() || (!aiKey && !aiConnected)}
               className="bg-white/10 text-white hover:bg-white/15"
             >
               <Sparkles className={aiSaving ? "animate-spin" : ""} />

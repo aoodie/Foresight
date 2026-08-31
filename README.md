@@ -1,7 +1,7 @@
 # Foresight FX
 
 Foresight FX is a full-stack forex research and execution dashboard with OANDA
-market data, multi-timeframe analysis, configurable OpenAI models, trading
+market data, multi-timeframe analysis, configurable LLM models and providers, trading
 journals, system logs, and demo/live account controls.
 
 ## Deployment note
@@ -39,7 +39,8 @@ only after testing the review behaviour on Practice.
 The worker does not call the LLM on every price update. It caches reviews and
 only requests a new review after a material price move, a review interval, or
 a released high-impact event. Broker-side stop loss and take profit remain the
-primary protection.
+primary protection. Set `LLM_BASE_URL=https://api.aoodie.xyz/v1` and choose the
+provider model with `LLM_MODEL`.
 
 ### Run with systemd
 

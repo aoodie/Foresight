@@ -85,9 +85,9 @@ export function isStrategyMarket(value: unknown): value is StrategyMarket {
 
 export type AiCallResult<T> = { value: T; responseId: string | null; usage: Record<string, unknown> | null; input: unknown; instructions: string };
 
-export async function generateStrategies(apiKey: string, model: string, markets: StrategyMarket[], luxAlgoResearch: unknown, mode: "scalping" | "intraday" | "swing" = "intraday"): Promise<AiCallResult<AiStrategy[]>> {
+export async function generateStrategies(apiKey: string, model: string, markets: StrategyMarket[], luxAlgoResearch: unknown, mode: "scalping" | "intraday" | "swing" = "intraday", baseUrl = defaultAiBaseUrl): Promise<AiCallResult<AiStrategy[]>> {
   const input = { tradingMode: mode, timeframeProfile: mode === "scalping" ? { context: "H1", setup: "M15", trigger: "M5" } : { context: "H4", setup: "H1", trigger: "M15" }, markets, luxAlgoResearch };
-  const response = await fetch("https://api.openai.com/v1/responses", {
+  const response = await fetch(aiEndpoint(baseUrl, "/responses"), {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -98,11 +98,11 @@ export async function generateStrategies(apiKey: string, model: string, markets:
     }),
   });
   const payload = await response.json() as { error?: { message?: string }; output?: Array<{ content?: Array<{ type?: string; text?: string }> }> };
-  if (!response.ok) throw new Error(payload.error?.message || "OpenAI could not generate the daily strategies.");
+  if (!response.ok) throw new Error(payload.error?.message || "The LLM provider could not generate the daily strategies.");
   const text = payload.output?.flatMap((item) => item.content ?? []).find((item) => item.type === "output_text")?.text;
-  if (!text) throw new Error("OpenAI returned no structured strategy output.");
+  if (!text) throw new Error("The LLM provider returned no structured strategy output.");
   const parsed = JSON.parse(text) as { strategies?: AiStrategy[] };
-  if (!Array.isArray(parsed.strategies)) throw new Error("OpenAI returned an invalid strategy payload.");
+  if (!Array.isArray(parsed.strategies)) throw new Error("The LLM provider returned an invalid strategy payload.");
   return { value: parsed.strategies, responseId: typeof (payload as { id?: unknown }).id === "string" ? (payload as { id: string }).id : null, usage: payload && typeof (payload as { usage?: unknown }).usage === "object" ? (payload as { usage: Record<string, unknown> }).usage : null, input, instructions: strategyInstructions };
 }
 
@@ -129,8 +129,8 @@ const reviewSchema = {
   required: ["drifted", "decision", "sentiment", "confidence", "explanation", "recommendedAction"],
 };
 
-export async function reviewLiveTrade(apiKey: string, model: string, input: unknown): Promise<AiCallResult<LiveTradeReview>> {
-  const response = await fetch("https://api.openai.com/v1/responses", {
+export async function reviewLiveTrade(apiKey: string, model: string, input: unknown, baseUrl = defaultAiBaseUrl): Promise<AiCallResult<LiveTradeReview>> {
+  const response = await fetch(aiEndpoint(baseUrl, "/responses"), {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -141,8 +141,9 @@ export async function reviewLiveTrade(apiKey: string, model: string, input: unkn
     }),
   });
   const payload = await response.json() as { error?: { message?: string }; output?: Array<{ content?: Array<{ type?: string; text?: string }> }> };
-  if (!response.ok) throw new Error(payload.error?.message || "OpenAI could not review the live trade.");
+  if (!response.ok) throw new Error(payload.error?.message || "The LLM provider could not review the live trade.");
   const text = payload.output?.flatMap((item) => item.content ?? []).find((item) => item.type === "output_text")?.text;
-  if (!text) throw new Error("OpenAI returned no trade review.");
+  if (!text) throw new Error("The LLM provider returned no trade review.");
   return { value: JSON.parse(text) as LiveTradeReview, responseId: typeof (payload as { id?: unknown }).id === "string" ? (payload as { id: string }).id : null, usage: payload && typeof (payload as { usage?: unknown }).usage === "object" ? (payload as { usage: Record<string, unknown> }).usage : null, input, instructions: reviewInstructions };
 }
+import { aiEndpoint, defaultAiBaseUrl } from "./ai-config.ts";
