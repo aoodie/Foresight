@@ -43,7 +43,8 @@ export async function createJournalEntry(input: JournalRecordInput) {
     ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at, environment = excluded.environment,
       account_id = excluded.account_id, instrument = excluded.instrument, direction = excluded.direction,
       style = excluded.style, strategy_name = excluded.strategy_name, setup_type = excluded.setup_type,
-      status = excluded.status, entry_price = excluded.entry_price, stop_loss = excluded.stop_loss,
+      status = CASE WHEN trade_journal.status IN ('closed', 'cancelled', 'win', 'loss', 'breakeven') AND excluded.status IN ('planned', 'submitted', 'open') THEN trade_journal.status ELSE excluded.status END,
+      entry_price = excluded.entry_price, stop_loss = excluded.stop_loss,
       take_profit_1 = excluded.take_profit_1, take_profit_2 = excluded.take_profit_2,
       units = excluded.units, lots = COALESCE(excluded.lots, trade_journal.lots),
       risk_percent = excluded.risk_percent, risk_amount = excluded.risk_amount,
@@ -51,7 +52,7 @@ export async function createJournalEntry(input: JournalRecordInput) {
       thesis = COALESCE(excluded.thesis, trade_journal.thesis), evidence = COALESCE(excluded.evidence, trade_journal.evidence),
       invalidation = COALESCE(excluded.invalidation, trade_journal.invalidation), notes = COALESCE(excluded.notes, trade_journal.notes),
       opened_at = COALESCE(excluded.opened_at, trade_journal.opened_at), closed_at = COALESCE(excluded.closed_at, trade_journal.closed_at),
-      metadata_json = COALESCE(excluded.metadata_json, trade_journal.metadata_json)`).bind(
+      metadata_json = CASE WHEN excluded.metadata_json IS NULL THEN trade_journal.metadata_json ELSE json_patch(CASE WHEN json_valid(trade_journal.metadata_json) THEN trade_journal.metadata_json ELSE '{}' END, excluded.metadata_json) END`).bind(
     id, now, now, input.environment, input.accountId ?? null, input.instrument, input.direction, input.style,
     input.strategyName ?? null, input.setupType ?? null, input.status ?? "planned", input.entryPrice ?? null,
     input.stopLoss ?? null, input.takeProfit1 ?? null, input.takeProfit2 ?? null, input.units ?? null,
@@ -71,9 +72,9 @@ export async function updateJournalEntry(input: { id: string; status?: string; p
   return Number(result.meta?.changes ?? 0);
 }
 
-export async function updateJournalByBrokerTradeId(input: { brokerTradeId: string; status: string; pnl?: number | null; notes?: string | null; metadata?: Record<string, unknown> }) {
+export async function updateJournalByBrokerTradeId(input: { brokerTradeId: string; status: string; pnl?: number | null; notes?: string | null; closedAt?: string | null; metadata?: Record<string, unknown> }) {
   const now = new Date().toISOString();
-  const closedAt = ["closed", "cancelled", "win", "loss", "breakeven"].includes(input.status) ? now : null;
+  const closedAt = input.closedAt ?? (["closed", "cancelled", "win", "loss", "breakeven"].includes(input.status) ? now : null);
   const metadataJson = input.metadata == null ? null : json(input.metadata);
   const result = await runtime.DB.prepare("UPDATE trade_journal SET status = ?, pnl = COALESCE(?, pnl), notes = COALESCE(?, notes), closed_at = COALESCE(?, closed_at), metadata_json = CASE WHEN ? IS NULL THEN metadata_json ELSE json_patch(CASE WHEN json_valid(metadata_json) THEN metadata_json ELSE '{}' END, ?) END, updated_at = ? WHERE broker_trade_id = ?")
     .bind(input.status, input.pnl ?? null, input.notes ?? null, closedAt, metadataJson, metadataJson, now, input.brokerTradeId).run();
@@ -95,4 +96,81 @@ export async function writeSystemLog(input: {
   await runtime.DB.prepare("INSERT INTO system_logs (id, created_at, level, category, event, message, instrument, environment, correlation_id, duration_ms, details_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
     .bind(id, new Date().toISOString(), input.level ?? "info", input.category, input.event, input.message, input.instrument ?? null, input.environment ?? null, input.correlationId ?? null, input.durationMs ?? null, json(input.details)).run();
   return id;
+}
+
+type BrokerSnapshotTrade = {
+  id: string;
+  instrument: string;
+  price: number;
+  openTime: string | null;
+  units: number;
+  stopLoss: number | null;
+  takeProfit: number | null;
+};
+
+type BrokerSnapshotFill = {
+  id: string;
+  time: string;
+  tradeIds: string[];
+  pnl: number;
+  pnlByTradeId?: Record<string, number>;
+  price: number | null;
+  closeReason: string | null;
+  isClose: boolean;
+};
+
+function parsedMetadata(value: unknown) {
+  if (typeof value !== "string") return {} as Record<string, unknown>;
+  try {
+    const result = JSON.parse(value) as unknown;
+    return result && typeof result === "object" ? result as Record<string, unknown> : {};
+  } catch {
+    return {} as Record<string, unknown>;
+  }
+}
+
+export async function reconcileJournalFromBrokerSnapshot(input: {
+  openTrades: BrokerSnapshotTrade[];
+  fills: BrokerSnapshotFill[];
+  environment: string;
+}) {
+  const rows = await runtime.DB.prepare("SELECT id, broker_trade_id, instrument, status, opened_at, metadata_json FROM trade_journal WHERE broker_trade_id IS NOT NULL AND status IN ('submitted', 'open', 'reconciliation_required') ORDER BY created_at ASC LIMIT 200").all<{
+    id: string; broker_trade_id: string; instrument: string; status: string; opened_at: string | null; metadata_json: string | null;
+  }>();
+  const openById = new Map(input.openTrades.map((trade) => [trade.id, trade]));
+  let activityUpdates = 0;
+  let closedUpdates = 0;
+
+  for (const row of rows.results ?? []) {
+    const openTrade = openById.get(row.broker_trade_id);
+    if (openTrade) {
+      const metadata = parsedMetadata(row.metadata_json);
+      const brokerSnapshot = { units: openTrade.units, entryPrice: openTrade.price, stopLoss: openTrade.stopLoss, takeProfit: openTrade.takeProfit };
+      if (JSON.stringify(metadata.brokerSnapshot) !== JSON.stringify(brokerSnapshot) || row.status !== "open") {
+        const previous = metadata.brokerSnapshot && typeof metadata.brokerSnapshot === "object" ? metadata.brokerSnapshot as Record<string, unknown> : null;
+        const changedFields = previous ? Object.keys(brokerSnapshot).filter((key) => previous[key] !== brokerSnapshot[key as keyof typeof brokerSnapshot]) : ["initial broker state"];
+        const activityAt = new Date().toISOString();
+        const notes = previous ? `Broker activity changed: ${changedFields.join(", ")}.` : "Broker position confirmed and protection snapshot recorded.";
+        await updateJournalEntry({ id: row.id, status: "open", brokerTradeId: row.broker_trade_id, notes, openedAt: row.opened_at ?? openTrade.openTime, metadata: { brokerSnapshot, lastBrokerActivityAt: activityAt } });
+        await writeSystemLog({ level: previous ? "warning" : "info", category: "reconciliation", event: previous ? "trade.broker_activity_changed" : "trade.broker_snapshot_recorded", message: `${row.instrument}: ${notes}`, instrument: row.instrument, environment: input.environment, details: { journalId: row.id, brokerTradeId: row.broker_trade_id, changedFields, previous, current: brokerSnapshot } });
+        activityUpdates += 1;
+      }
+      continue;
+    }
+
+    const relatedCloseFills = input.fills.filter((fill) => fill.isClose && fill.tradeIds.includes(row.broker_trade_id)).sort((a, b) => a.time.localeCompare(b.time));
+    if (!relatedCloseFills.length) continue;
+    const latest = relatedCloseFills.at(-1)!;
+    const pnl = relatedCloseFills.reduce((sum, fill) => {
+      const allocated = fill.pnlByTradeId?.[row.broker_trade_id];
+      return sum + (Number.isFinite(allocated) ? Number(allocated) : fill.tradeIds.length === 1 ? fill.pnl : 0);
+    }, 0);
+    const closeReason = latest.closeReason ?? "Closed order";
+    const notes = `${closeReason}. Journal reconciled to OANDA transaction ${latest.id}.`;
+    await updateJournalEntry({ id: row.id, status: "closed", brokerTradeId: row.broker_trade_id, pnl, notes, closedAt: latest.time, metadata: { closeReason, closePrice: latest.price, closeTransactionId: latest.id, closeTime: latest.time, reconciledAt: new Date().toISOString() } });
+    await writeSystemLog({ category: "reconciliation", event: "trade.closed_reconciled", message: `${row.instrument}: ${notes}`, instrument: row.instrument, environment: input.environment, details: { journalId: row.id, brokerTradeId: row.broker_trade_id, pnl, closePrice: latest.price, closeTime: latest.time } });
+    closedUpdates += 1;
+  }
+
+  return { checked: rows.results?.length ?? 0, activityUpdates, closedUpdates };
 }

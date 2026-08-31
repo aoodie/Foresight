@@ -87,6 +87,46 @@ export function calculateRiskSizedUnits(input: {
   return units >= 1 ? { units, riskAmount, cashRiskPerUnit } : null;
 }
 
+export type SizeLockScope = "none" | "daily" | "weekly";
+
+export function positionRiskAmount(input: {
+  units: number;
+  stopDistance: number;
+  lossConversionFactor: number;
+}) {
+  if (!Number.isSafeInteger(input.units) || input.units <= 0) return null;
+  if (!Number.isFinite(input.stopDistance) || input.stopDistance <= 0) return null;
+  if (!Number.isFinite(input.lossConversionFactor) || input.lossConversionFactor <= 0) return null;
+  return input.units * input.stopDistance * input.lossConversionFactor;
+}
+
+export function standardLots(instrument: string, units: number) {
+  if (instrument.startsWith("XAU_") || instrument.startsWith("US30_")) return null;
+  return Math.abs(units) / 100_000;
+}
+
+export function positionSizeLockPeriod(scope: SizeLockScope, now = new Date()) {
+  if (scope === "none") return null;
+  const day = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  if (scope === "daily") return day.toISOString().slice(0, 10);
+  const weekday = day.getUTCDay() || 7;
+  day.setUTCDate(day.getUTCDate() - weekday + 1);
+  return `${day.toISOString().slice(0, 10)}-week`;
+}
+
+export function resolveLockedPositionSize(input: {
+  riskSafeUnits: number;
+  lockedUnits?: number | null;
+}) {
+  if (!Number.isSafeInteger(input.riskSafeUnits) || input.riskSafeUnits <= 0) return { ok: false as const, reason: "No valid risk-safe size is available." };
+  if (input.lockedUnits == null) return { ok: true as const, units: input.riskSafeUnits, created: true };
+  if (!Number.isSafeInteger(input.lockedUnits) || input.lockedUnits <= 0) return { ok: false as const, reason: "The stored fixed position size is invalid." };
+  if (input.lockedUnits > input.riskSafeUnits) {
+    return { ok: false as const, reason: `The fixed size of ${input.lockedUnits.toLocaleString()} units exceeds the current risk-safe limit of ${input.riskSafeUnits.toLocaleString()} units.` };
+  }
+  return { ok: true as const, units: input.lockedUnits, created: false };
+}
+
 export function hasTriggerConfirmation(strategies: Array<{ id: string; status: string }> | null | undefined) {
   return strategies?.some((strategy) => strategy.id !== "trend-continuation" && (strategy.status === "confirmed" || strategy.status === "selected")) ?? false;
 }

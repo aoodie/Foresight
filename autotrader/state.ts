@@ -152,8 +152,9 @@ export class WorkerState {
     if (notes) mergedMetadata.lastNote = notes;
     if (metadata) Object.assign(mergedMetadata, metadata);
     const now = new Date().toISOString();
+    const closeTime = metadata && typeof metadata.closeTime === "string" ? metadata.closeTime : now;
     this.db.prepare("UPDATE worker_journal SET status = ?, pnl = COALESCE(?, pnl), closed_at = CASE WHEN ? IN ('closed', 'cancelled', 'win', 'loss', 'breakeven') THEN ? ELSE closed_at END, updated_at = ?, metadata_json = ? WHERE broker_trade_id = ?")
-      .run(status, pnl ?? null, status, now, now, JSON.stringify(mergedMetadata), brokerTradeId);
+      .run(status, pnl ?? null, status, closeTime, now, JSON.stringify(mergedMetadata), brokerTradeId);
   }
 
   journalUpdateById(id: string, input: { status?: string; brokerTradeId?: string | null; entryPrice?: number | null; pnl?: number | null; notes?: string; metadata?: Record<string, unknown> }) {
@@ -163,7 +164,7 @@ export class WorkerState {
     if (input.notes) mergedMetadata.lastNote = input.notes;
     if (input.metadata) Object.assign(mergedMetadata, input.metadata);
     const now = new Date().toISOString();
-    const terminal = input.status && ["closed", "cancelled", "win", "loss", "breakeven"].includes(input.status) ? now : null;
+    const terminal = input.status && ["closed", "cancelled", "win", "loss", "breakeven"].includes(input.status) ? (typeof input.metadata?.closeTime === "string" ? input.metadata.closeTime : now) : null;
     this.db.prepare(`UPDATE worker_journal SET status = COALESCE(?, status), broker_trade_id = COALESCE(?, broker_trade_id),
       entry_price = COALESCE(?, entry_price), pnl = COALESCE(?, pnl), closed_at = COALESCE(?, closed_at),
       updated_at = ?, metadata_json = ? WHERE id = ?`)
@@ -206,8 +207,7 @@ export class WorkerState {
     this.db.prepare(`INSERT INTO worker_sync_queue (event_key, event_type, payload_json, created_at, updated_at, next_attempt_at)
       VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT(event_key) DO UPDATE SET payload_json = excluded.payload_json, updated_at = excluded.updated_at,
-        next_attempt_at = CASE WHEN worker_sync_queue.delivered_at IS NULL THEN excluded.next_attempt_at ELSE worker_sync_queue.next_attempt_at END,
-        last_error = CASE WHEN worker_sync_queue.delivered_at IS NULL THEN NULL ELSE worker_sync_queue.last_error END`)
+        attempts = 0, next_attempt_at = excluded.next_attempt_at, last_error = NULL, delivered_at = NULL`)
       .run(eventKey, eventType, JSON.stringify(payload), now, now, now);
   }
 

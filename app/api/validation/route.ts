@@ -4,14 +4,15 @@ import { fetchOandaAccountSummary, fetchOandaOpenTrades, fetchOandaOrderFills } 
 import { getOandaToken } from "@/lib/oanda-secret";
 import { isOwnerRequest } from "@/lib/owner-request";
 import { buildValidationReport, type ValidationJournalRow } from "@/lib/validation";
+import { reconcileJournalFromBrokerSnapshot } from "@/lib/trading-records";
 
 const runtime = env as unknown as { DB: D1Database };
 
 export async function GET() {
   if (!(await isOwnerRequest())) return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
 
-  const rows = await runtime.DB.prepare("SELECT * FROM trade_journal ORDER BY created_at DESC LIMIT 500").all<ValidationJournalRow>();
-  const journal = rows.results ?? [];
+  const loadJournal = async () => (await runtime.DB.prepare("SELECT * FROM trade_journal ORDER BY created_at DESC LIMIT 500").all<ValidationJournalRow>()).results ?? [];
+  let journal = await loadJournal();
   const connection = await getOandaToken();
   if (!connection?.accountId) {
     return NextResponse.json({
@@ -32,8 +33,11 @@ export async function GET() {
       fetchOandaOpenTrades({ token: connection.token, environment: connection.environment, accountId: connection.accountId }),
       fetchOandaAccountSummary({ token: connection.token, environment: connection.environment, accountId: connection.accountId }),
     ]);
+    const reconciliation = await reconcileJournalFromBrokerSnapshot({ openTrades, fills, environment: connection.environment });
+    if (reconciliation.activityUpdates || reconciliation.closedUpdates) journal = await loadJournal();
     return NextResponse.json({
       connected: true,
+      reconciliation,
       ...buildValidationReport({ journal, fills, openTrades, environment: connection.environment, currency: account.currency }),
     });
   } catch (error) {

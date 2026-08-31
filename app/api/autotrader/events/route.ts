@@ -20,6 +20,7 @@ function closeMetadata(payload: Record<string, unknown>) {
   if (typeof payload.closeReason === "string") metadata.closeReason = payload.closeReason;
   if (typeof payload.closePrice === "number" && Number.isFinite(payload.closePrice)) metadata.closePrice = payload.closePrice;
   if (typeof payload.closeTransactionId === "string") metadata.closeTransactionId = payload.closeTransactionId;
+  if (typeof payload.closeTime === "string") metadata.closeTime = payload.closeTime;
   return Object.keys(metadata).length ? metadata : undefined;
 }
 
@@ -55,14 +56,22 @@ export async function POST(request: Request) {
     });
     return NextResponse.json({ ok: true, id });
   }
+  if (body.type === "journal.activity") {
+    if (typeof payload.journalId !== "string" || typeof payload.brokerTradeId !== "string" || !payload.metadata || typeof payload.metadata !== "object") {
+      return NextResponse.json({ error: "Journal activity is missing its journal ID, broker trade ID or metadata." }, { status: 400 });
+    }
+    const matched = await updateJournalEntry({ id: payload.journalId, status: "open", brokerTradeId: payload.brokerTradeId, notes: stringOrNull(payload.notes), metadata: payload.metadata as Record<string, unknown> });
+    if (!matched) return NextResponse.json({ error: "The journal record for this broker activity was not found." }, { status: 404 });
+    return NextResponse.json({ ok: true });
+  }
   if (body.type === "journal.update") {
     if (typeof payload.brokerTradeId !== "string" || typeof payload.status !== "string") return NextResponse.json({ error: "Journal update is missing brokerTradeId or status." }, { status: 400 });
     if (!journalStatuses.has(payload.status)) return NextResponse.json({ error: "Journal update contains an invalid status." }, { status: 400 });
     if (typeof payload.journalId === "string") {
-      const matched = await updateJournalEntry({ id: payload.journalId, status: payload.status, pnl: numberOrNull(payload.pnl), brokerTradeId: payload.brokerTradeId, notes: stringOrNull(payload.notes), metadata: closeMetadata(payload) });
-      if (!matched) await updateJournalByBrokerTradeId({ brokerTradeId: payload.brokerTradeId, status: payload.status, pnl: numberOrNull(payload.pnl), notes: stringOrNull(payload.notes), metadata: closeMetadata(payload) });
+      const matched = await updateJournalEntry({ id: payload.journalId, status: payload.status, pnl: numberOrNull(payload.pnl), brokerTradeId: payload.brokerTradeId, notes: stringOrNull(payload.notes), closedAt: stringOrNull(payload.closeTime), metadata: closeMetadata(payload) });
+      if (!matched) await updateJournalByBrokerTradeId({ brokerTradeId: payload.brokerTradeId, status: payload.status, pnl: numberOrNull(payload.pnl), notes: stringOrNull(payload.notes), closedAt: stringOrNull(payload.closeTime), metadata: closeMetadata(payload) });
     } else {
-      await updateJournalByBrokerTradeId({ brokerTradeId: payload.brokerTradeId, status: payload.status, pnl: numberOrNull(payload.pnl), notes: stringOrNull(payload.notes), metadata: closeMetadata(payload) });
+      await updateJournalByBrokerTradeId({ brokerTradeId: payload.brokerTradeId, status: payload.status, pnl: numberOrNull(payload.pnl), notes: stringOrNull(payload.notes), closedAt: stringOrNull(payload.closeTime), metadata: closeMetadata(payload) });
     }
     return NextResponse.json({ ok: true });
   }

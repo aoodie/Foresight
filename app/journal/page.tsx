@@ -18,10 +18,12 @@ export default function JournalPage() {
   const [result, setResult] = useState({ status: "closed", pnl: "", notes: "" });
 
   const load = useCallback(async () => {
-    const response = await fetch("/api/journal?limit=200", { cache: "no-store" });
+    const response = await fetch("/api/journal?limit=200&reconcile=1", { cache: "no-store" });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "Unable to load journal.");
     setEntries(Array.isArray(payload.entries) ? payload.entries : []);
+    if (payload.reconciliationError) setMessage(`Journal loaded, but OANDA reconciliation needs attention: ${payload.reconciliationError}`);
+    else if (payload.reconciliation?.closedUpdates || payload.reconciliation?.activityUpdates) setMessage(`Journal reconciled with OANDA: ${payload.reconciliation.closedUpdates} closed trade(s) and ${payload.reconciliation.activityUpdates} activity change(s) recorded.`);
   }, []);
 
   useEffect(() => { const timer = window.setTimeout(() => void load().catch((error: unknown) => setMessage(error instanceof Error ? error.message : "Unable to load journal.")), 0); return () => window.clearTimeout(timer); }, [load]);

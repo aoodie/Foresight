@@ -17,7 +17,7 @@ import { getEconomicEventStatus } from "../lib/economic-calendar.ts";
 import { analyseInstrument, candleCountForGranularity, combineTimeframes, timeframeProfiles, type ScannerResult, type TimeframeMode } from "../lib/market-scanner.ts";
 import { reviewLiveTrade, type LiveTradeReview } from "../lib/openai-strategy.ts";
 import { defaultAiBaseUrl, normalizeAiBaseUrl } from "../lib/ai-config.ts";
-import { calculateRiskSizedUnits, hasTriggerConfirmation, pipSize, validateProtectedOrder } from "../lib/trade-risk.ts";
+import { calculateRiskSizedUnits, hasTriggerConfirmation, pipSize, positionRiskAmount, positionSizeLockPeriod, resolveLockedPositionSize, standardLots, validateProtectedOrder, type SizeLockScope } from "../lib/trade-risk.ts";
 import { WorkerState, type WorkerEvent, type WorkerJournalRow } from "./state.ts";
 
 type Config = {
@@ -38,6 +38,7 @@ type Config = {
   minConfirmations: number;
   maxSpreadPips: number;
   maxUnits: number;
+  sizeLockScope: SizeLockScope;
   llmApiKey?: string;
   llmModel: string;
   llmBaseUrl: string;
@@ -74,6 +75,8 @@ function loadConfig(): Config {
   if (!instruments.length) throw new Error("AUTOTRADER_INSTRUMENTS must contain at least one explicitly approved instrument.");
   const mode = (process.env.TRADING_STYLE?.trim() || "intraday") as TimeframeMode;
   if (!(mode in timeframeProfiles)) throw new Error("TRADING_STYLE must be scalping, intraday, or swing.");
+  const sizeLockScope = (process.env.AUTOTRADER_SIZE_LOCK_SCOPE?.trim().toLowerCase() || "daily") as SizeLockScope;
+  if (!(["none", "daily", "weekly"] as string[]).includes(sizeLockScope)) throw new Error("AUTOTRADER_SIZE_LOCK_SCOPE must be none, daily, or weekly.");
   const databasePath = resolve(process.env.AUTOTRADER_DATABASE_PATH || "./data/autotrader.sqlite");
   return {
     enabled: truthy(process.env.AUTOTRADER_ENABLED),
@@ -93,6 +96,7 @@ function loadConfig(): Config {
     minConfirmations: Math.min(3, Math.max(2, Math.floor(numberEnv("MIN_CONFIRMATIONS", 2)))),
     maxSpreadPips: Math.max(0.1, numberEnv("MAX_SPREAD_PIPS", 2.5)),
     maxUnits: Math.max(1, Math.floor(numberEnv("MAX_UNITS", 1000000))),
+    sizeLockScope,
     llmApiKey: process.env.LLM_API_KEY?.trim() || process.env.OPENAI_API_KEY?.trim() || undefined,
     llmModel: process.env.LLM_MODEL?.trim() || "",
     llmBaseUrl: normalizeAiBaseUrl(process.env.LLM_BASE_URL?.trim() || defaultAiBaseUrl),
@@ -210,12 +214,14 @@ class AutoTrader {
   }
 
   private journalCreatePayload(row: WorkerJournalRow) {
+    const metadata = row.metadata && typeof row.metadata === "object" ? row.metadata as Record<string, unknown> : {};
     return {
       id: row.id, environment: row.environment, accountId: row.accountId, instrument: row.instrument,
       direction: row.direction, style: row.style, strategyName: row.strategyName, status: row.status,
       entryPrice: row.entryPrice, stopLoss: row.stopLoss, takeProfit1: row.takeProfit1, takeProfit2: row.takeProfit2,
-      units: row.units, riskPercent: row.riskPercent, riskAmount: row.riskAmount, brokerTradeId: row.brokerTradeId,
-      openedAt: row.created_at, closedAt: row.closed_at, pnl: row.pnl, metadata: row.metadata,
+      units: row.units, lots: standardLots(row.instrument, row.units), riskPercent: row.riskPercent, riskAmount: row.riskAmount, brokerTradeId: row.brokerTradeId,
+      notes: typeof metadata.lastNote === "string" ? metadata.lastNote : null,
+      openedAt: typeof metadata.fillTime === "string" ? metadata.fillTime : row.created_at, closedAt: row.closed_at, pnl: row.pnl, metadata,
     };
   }
 
@@ -226,9 +232,13 @@ class AutoTrader {
     }
   }
 
-  private async syncJournalUpdate(row: { id: string; brokerTradeId: string }, status: string, pnl: number | null, notes: string, details: { closeReason?: string | null; closePrice?: number | null; closeTransactionId?: string | null } = {}) {
+  private async syncJournalUpdate(row: { id: string; brokerTradeId: string }, status: string, pnl: number | null, notes: string, details: { closeReason?: string | null; closePrice?: number | null; closeTransactionId?: string | null; closeTime?: string | null } = {}) {
     const outcomeKey = details.closeTransactionId ?? status;
     await this.sync("journal.update", { journalId: row.id, brokerTradeId: row.brokerTradeId, status, pnl, notes, ...details }, `journal.update:${row.id}:${status}:${outcomeKey}`);
+  }
+
+  private async syncJournalActivity(row: { id: string; brokerTradeId: string }, notes: string, metadata: Record<string, unknown>) {
+    await this.sync("journal.activity", { journalId: row.id, brokerTradeId: row.brokerTradeId, status: "open", notes, metadata }, `journal.activity:${row.id}:${await hashInput(metadata)}`);
   }
 
   private closeFillFor(fills: Awaited<ReturnType<typeof fetchOandaOrderFills>>, tradeId: string) {
@@ -286,6 +296,18 @@ class AutoTrader {
     return sizing ? { ...sizing, stopDistance } : null;
   }
 
+  private lockedSizing(instrument: string, riskSizing: { units: number; riskAmount: number; cashRiskPerUnit: number; stopDistance: number }) {
+    const period = positionSizeLockPeriod(this.config.sizeLockScope);
+    const lockKey = period ? `position-size:${this.config.environment}:${this.config.mode}:${instrument}:${period}` : null;
+    const lockedUnits = lockKey ? this.store.get<number>(lockKey) : null;
+    const resolved = resolveLockedPositionSize({ riskSafeUnits: riskSizing.units, lockedUnits });
+    if (!resolved.ok) return { ...resolved, lockKey, period };
+    if (lockKey && resolved.created) this.store.set(lockKey, resolved.units);
+    const riskAmount = positionRiskAmount({ units: resolved.units, stopDistance: riskSizing.stopDistance, lossConversionFactor: riskSizing.cashRiskPerUnit / riskSizing.stopDistance });
+    if (riskAmount === null) return { ok: false as const, reason: "The cash risk for the fixed position size could not be verified.", lockKey, period };
+    return { ok: true as const, units: resolved.units, riskAmount, lockKey, period, created: resolved.created };
+  }
+
   private async maybeReviewTrade(trade: Awaited<ReturnType<typeof fetchOandaOpenTrades>>[number], result: ScannerResult | null, eventContext: unknown) {
     if (!this.config.llmApiKey) return;
     const prior = this.store.get<{ at: number; price: number; atr: number }>(`review:${trade.id}`);
@@ -307,8 +329,8 @@ class AutoTrader {
       const managed = this.store.managedOpenTrades().find((row) => row.broker_trade_id === trade.id);
       const notes = `LLM closed: ${review.explanation}`;
       const closePrice = Number.isFinite(closed.price) ? closed.price : null;
-      this.store.journalUpdateByBrokerTradeId(trade.id, "closed", closed.pnl, notes, { closeReason: "LLM close", closePrice, closeTransactionId: closed.transactionId });
-      if (managed) await this.syncJournalUpdate({ id: managed.id, brokerTradeId: trade.id }, "closed", closed.pnl, notes, { closeReason: "LLM close", closePrice, closeTransactionId: closed.transactionId });
+      this.store.journalUpdateByBrokerTradeId(trade.id, "closed", closed.pnl, notes, { closeReason: "LLM close", closePrice, closeTransactionId: closed.transactionId, closeTime: closed.closeTime });
+      if (managed) await this.syncJournalUpdate({ id: managed.id, brokerTradeId: trade.id }, "closed", closed.pnl, notes, { closeReason: "LLM close", closePrice, closeTransactionId: closed.transactionId, closeTime: closed.closeTime });
       this.log({ level: "warning", event: "trade.closed_by_policy", message: `Closed ${trade.instrument} after a high-confidence LLM close decision.`, instrument: trade.instrument, details: { tradeId: trade.id, pnl: closed.pnl } });
     }
   }
@@ -319,7 +341,7 @@ class AutoTrader {
       const clientId = typeof pending.metadata.clientId === "string" ? pending.metadata.clientId : null;
       const recovered = clientId ? trades.find((trade) => trade.clientId === clientId) : null;
       if (recovered) {
-        this.store.journalUpdateById(pending.id, { status: "open", brokerTradeId: recovered.id, entryPrice: recovered.price, notes: "Recovered broker trade after an interrupted order response." });
+        this.store.journalUpdateById(pending.id, { status: "open", brokerTradeId: recovered.id, entryPrice: recovered.price, notes: "Recovered broker trade after an interrupted order response.", metadata: { fillTime: recovered.openTime, brokerSnapshot: { units: recovered.units, entryPrice: recovered.price, stopLoss: recovered.stopLoss, takeProfit: recovered.takeProfit } } });
         const row = this.store.journalRows().find((item) => item.id === pending.id);
         if (row) await this.sync("journal.create", this.journalCreatePayload(row), `journal.create:${row.id}`);
         this.log({ level: "warning", event: "trade.recovered", message: `${recovered.instrument}: recovered broker trade ${recovered.id} from its deterministic client ID.`, instrument: recovered.instrument, details: { tradeId: recovered.id, journalId: pending.id, clientId } });
@@ -334,15 +356,27 @@ class AutoTrader {
     const managedIds = new Set(managedRows.map((row) => row.broker_trade_id));
     for (const trade of trades) {
       if (!managedIds.has(trade.id)) continue;
+      const managed = managedRows.find((row) => row.broker_trade_id === trade.id)!;
+      const snapshot = { units: trade.units, entryPrice: trade.price, stopLoss: trade.stopLoss, takeProfit: trade.takeProfit };
+      const snapshotKey = `broker-snapshot:${trade.id}`;
+      const priorSnapshot = this.store.get<typeof snapshot>(snapshotKey);
+      if (JSON.stringify(priorSnapshot) !== JSON.stringify(snapshot)) {
+        const changedFields = priorSnapshot ? Object.keys(snapshot).filter((key) => priorSnapshot[key as keyof typeof snapshot] !== snapshot[key as keyof typeof snapshot]) : ["initial broker state"];
+        const notes = priorSnapshot ? `Broker activity changed: ${changedFields.join(", ")}.` : "Broker position confirmed and protection snapshot recorded.";
+        const activityAt = new Date().toISOString();
+        this.store.set(snapshotKey, snapshot);
+        this.store.journalUpdateByBrokerTradeId(trade.id, "open", null, notes, { brokerSnapshot: snapshot, lastBrokerActivityAt: activityAt });
+        await this.syncJournalActivity({ id: managed.id, brokerTradeId: trade.id }, notes, { brokerSnapshot: snapshot, lastBrokerActivityAt: activityAt });
+        this.log({ level: priorSnapshot ? "warning" : "info", event: priorSnapshot ? "trade.broker_activity_changed" : "trade.broker_snapshot_recorded", message: `${trade.instrument}: ${notes}`, instrument: trade.instrument, details: { tradeId: trade.id, changedFields, previous: priorSnapshot, current: snapshot } });
+      }
       if (!trade.stopLoss || !trade.takeProfit) {
         this.log({ level: "error", event: "trade.unprotected", message: `${trade.instrument} trade ${trade.id} has no broker-side stop and target.`, instrument: trade.instrument, details: { tradeId: trade.id } });
         if (this.config.closeUnprotected) {
           const closed = await closeOandaTrade({ token: this.config.token, environment: this.config.environment, accountId: this.config.accountId, tradeId: trade.id });
-          const managed = managedRows.find((row) => row.broker_trade_id === trade.id);
           const notes = "Safety close: broker-side stop/target was missing.";
           const closePrice = Number.isFinite(closed.price) ? closed.price : null;
-          this.store.journalUpdateByBrokerTradeId(trade.id, "closed", closed.pnl, notes, { closeReason: "Safety close", closePrice, closeTransactionId: closed.transactionId });
-          if (managed) await this.syncJournalUpdate({ id: managed.id, brokerTradeId: trade.id }, "closed", closed.pnl, notes, { closeReason: "Safety close", closePrice, closeTransactionId: closed.transactionId });
+          this.store.journalUpdateByBrokerTradeId(trade.id, "closed", closed.pnl, notes, { closeReason: "Safety close", closePrice, closeTransactionId: closed.transactionId, closeTime: closed.closeTime });
+          await this.syncJournalUpdate({ id: managed.id, brokerTradeId: trade.id }, "closed", closed.pnl, notes, { closeReason: "Safety close", closePrice, closeTransactionId: closed.transactionId, closeTime: closed.closeTime });
         }
         continue;
       }
@@ -380,8 +414,9 @@ class AutoTrader {
       const notes = `${closeReason}. Trade no longer open at OANDA; reconciled from transaction history.`;
       const closePrice = closeFill?.price ?? brokerTrade.closePrice;
       const closeTransactionId = closeFill?.id ?? brokerTrade.closingTransactionIds.at(-1) ?? null;
-      this.store.journalUpdateByBrokerTradeId(managed.broker_trade_id, "closed", pnl, notes, { closeReason, closePrice, closeTransactionId });
-      await this.syncJournalUpdate({ id: managed.id, brokerTradeId: managed.broker_trade_id }, "closed", pnl, notes, { closeReason, closePrice, closeTransactionId });
+      const closeTime = closeFill?.time ?? brokerTrade.closeTime;
+      this.store.journalUpdateByBrokerTradeId(managed.broker_trade_id, "closed", pnl, notes, { closeReason, closePrice, closeTransactionId, closeTime });
+      await this.syncJournalUpdate({ id: managed.id, brokerTradeId: managed.broker_trade_id }, "closed", pnl, notes, { closeReason, closePrice, closeTransactionId, closeTime });
     }
   }
 
@@ -410,18 +445,24 @@ class AutoTrader {
     }
     const sizing = this.calculateUnits(equity, plan, quote);
     if (!sizing) return null;
+    const fixedSizing = this.lockedSizing(result.instrument, sizing);
+    if (!fixedSizing.ok) {
+      this.log({ level: "warning", event: "entry.blocked_fixed_size_risk", message: `${result.instrument}: ${fixedSizing.reason}`, instrument: result.instrument, details: { sizeLockScope: this.config.sizeLockScope, period: fixedSizing.period, riskSafeUnits: sizing.units } });
+      return null;
+    }
     const signalKey = `${result.instrument}:${this.config.mode}:${bias}:${result.updatedAt}:${result.score}:${result.selectedStrategy?.id ?? "trend-continuation"}`;
     if (this.store.get<number>(`signal:${signalKey}`)) return null;
     const journalId = randomUUID();
     const signalHash = await hashInput(signalKey);
     const clientId = `foresight-${signalHash.slice(0, 24)}`;
     this.store.set(`signal:${signalKey}`, Date.now());
-    this.store.journalCreate({ id: journalId, brokerTradeId: null, environment: this.config.environment, accountId: this.config.accountId, instrument: result.instrument, direction: bias, style: this.config.mode, strategyName: result.selectedStrategy?.name ?? "Multi-timeframe trend continuation", entryPrice: plan.entry, stopLoss: result.stopLoss!, takeProfit1: result.takeProfit1!, takeProfit2: result.takeProfit2, units: direction * sizing.units, riskPercent: this.config.riskPercent, riskAmount: sizing.riskAmount, status: "submitted", metadata: { strategyVersion: result.strategyVersion, score: result.score, confirmations: result.confirmations, selectedStrategy: result.selectedStrategy, timeframes: result.timeframeAlignment, clientId, signalKey, riskReward: protection.riskReward } });
+    const lots = standardLots(result.instrument, fixedSizing.units);
+    this.store.journalCreate({ id: journalId, brokerTradeId: null, environment: this.config.environment, accountId: this.config.accountId, instrument: result.instrument, direction: bias, style: this.config.mode, strategyName: result.selectedStrategy?.name ?? "Multi-timeframe trend continuation", entryPrice: plan.entry, stopLoss: result.stopLoss!, takeProfit1: result.takeProfit1!, takeProfit2: result.takeProfit2, units: direction * fixedSizing.units, riskPercent: this.config.riskPercent, riskAmount: fixedSizing.riskAmount, status: "submitted", metadata: { strategyVersion: result.strategyVersion, score: result.score, confirmations: result.confirmations, selectedStrategy: result.selectedStrategy, timeframes: result.timeframeAlignment, clientId, signalKey, riskReward: protection.riskReward, lots, sizeLockScope: this.config.sizeLockScope, sizeLockPeriod: fixedSizing.period, fixedUnits: fixedSizing.units, riskSafeUnits: sizing.units, stopDistance: sizing.stopDistance, lossConversionFactor: quote.homeConversionFactors.negativeUnits } });
     try {
-      const order = await submitOandaMarketOrder({ token: this.config.token, environment: this.config.environment, accountId: this.config.accountId, instrument: result.instrument, units: direction * sizing.units, stopLoss: result.stopLoss, takeProfit: target, clientExtensions: { id: clientId, tag: "foresight-autotrader", comment: this.config.mode } });
+      const order = await submitOandaMarketOrder({ token: this.config.token, environment: this.config.environment, accountId: this.config.accountId, instrument: result.instrument, units: direction * fixedSizing.units, stopLoss: result.stopLoss, takeProfit: target, clientExtensions: { id: clientId, tag: "foresight-autotrader", comment: `${this.config.mode}:${this.config.sizeLockScope}` } });
       if (!order.tradeId) {
         const notes = "OANDA filled the order but did not open a new trade. It may have reduced or closed an existing position; automatic management was not attached.";
-        this.store.journalUpdateById(journalId, { status: "closed", entryPrice: order.fillPrice, pnl: order.realisedPnl, notes, metadata: { orderId: order.orderId, fillTransactionId: order.fillTransactionId, reducedTradeId: order.reducedTradeId, closedTradeIds: order.closedTradeIds } });
+        this.store.journalUpdateById(journalId, { status: "closed", entryPrice: order.fillPrice, pnl: order.realisedPnl, notes, metadata: { orderId: order.orderId, fillTransactionId: order.fillTransactionId, reducedTradeId: order.reducedTradeId, closedTradeIds: order.closedTradeIds, closeTime: order.fillTime } });
         const row = this.store.journalRows().find((item) => item.id === journalId);
         if (row) await this.sync("journal.create", this.journalCreatePayload(row), `journal.create:${journalId}`);
         this.log({ level: "error", event: "trade.fill_without_open_trade", message: `${result.instrument}: ${notes}`, instrument: result.instrument, details: { journalId, order } });
@@ -431,8 +472,8 @@ class AutoTrader {
       this.store.journalUpdateById(journalId, { status: "open", brokerTradeId, entryPrice: order.fillPrice, notes: "OANDA order filled with broker-side stop loss and take profit.", metadata: { orderId: order.orderId, fillTransactionId: order.fillTransactionId, fillTime: order.fillTime } });
       const row = this.store.journalRows().find((item) => item.id === journalId);
       if (row) await this.sync("journal.create", this.journalCreatePayload(row), `journal.create:${journalId}`);
-      this.log({ event: "trade.opened", message: `Opened ${bias} ${result.instrument} with ${Math.abs(sizing.units)} units.`, instrument: result.instrument, details: { brokerTradeId, journalId, score: result.score, confirmations: result.confirmations, entry: order.fillPrice ?? plan.entry, stopLoss: result.stopLoss, takeProfit: target, riskAmount: sizing.riskAmount, riskReward: protection.riskReward } });
-      return { id: brokerTradeId, instrument: result.instrument, price: order.fillPrice ?? plan.entry, openTime: order.fillTime, units: direction * sizing.units, unrealizedPL: 0, stopLoss: result.stopLoss, takeProfit: target, clientId, clientTag: "foresight-autotrader" };
+      this.log({ event: "trade.opened", message: `Opened ${bias} ${result.instrument} with ${Math.abs(fixedSizing.units).toLocaleString()} units${lots === null ? "" : ` (${lots.toFixed(2)} lots)`}; ${this.config.sizeLockScope} size lock.`, instrument: result.instrument, details: { brokerTradeId, journalId, score: result.score, confirmations: result.confirmations, entry: order.fillPrice ?? plan.entry, stopLoss: result.stopLoss, takeProfit: target, units: fixedSizing.units, lots, sizeLockScope: this.config.sizeLockScope, sizeLockPeriod: fixedSizing.period, riskSafeUnits: sizing.units, riskAmount: fixedSizing.riskAmount, riskReward: protection.riskReward, lossConversionFactor: quote.homeConversionFactors.negativeUnits } });
+      return { id: brokerTradeId, instrument: result.instrument, price: order.fillPrice ?? plan.entry, openTime: order.fillTime, units: direction * fixedSizing.units, unrealizedPL: 0, stopLoss: result.stopLoss, takeProfit: target, clientId, clientTag: "foresight-autotrader" };
     } catch (error) {
       const notes = error instanceof Error ? error.message : "Order submission failed.";
       const outcomeUnknown = error instanceof OandaApiError && error.status === 502;
@@ -462,7 +503,7 @@ class AutoTrader {
     const maxLoss = baselineEquity * this.config.maxDailyLossPercent / 100;
     if (Date.now() - this.lastHeartbeatAt >= this.config.heartbeatMs) {
       this.lastHeartbeatAt = Date.now();
-      this.log({ event: "worker.heartbeat", message: `Worker active: equity ${account.equity.toFixed(2)}, open trades ${trades.length}, guarded daily P&L ${guardedDayPnl.toFixed(2)}.`, details: { equity: account.equity, baselineEquity, openTrades: trades.length, brokerRealisedDayPnl: dayPnl, localJournalDayPnl: localDayPnl, openLoss, guardedDayPnl, mode: this.config.mode, model: this.config.llmModel, baseUrl: this.config.llmBaseUrl } });
+      this.log({ event: "worker.heartbeat", message: `Worker active: equity ${account.equity.toFixed(2)}, open trades ${trades.length}, guarded daily P&L ${guardedDayPnl.toFixed(2)}, ${this.config.sizeLockScope} position-size lock.`, details: { equity: account.equity, baselineEquity, openTrades: trades.length, brokerRealisedDayPnl: dayPnl, localJournalDayPnl: localDayPnl, openLoss, guardedDayPnl, mode: this.config.mode, sizeLockScope: this.config.sizeLockScope, model: this.config.llmModel, baseUrl: this.config.llmBaseUrl } });
     }
     if (guardedDayPnl <= -maxLoss) { this.log({ level: "error", event: "entry.blocked_daily_loss", message: `New entries blocked: daily loss limit reached (${guardedDayPnl.toFixed(2)} including open losses).`, details: { brokerRealisedDayPnl: dayPnl, localJournalDayPnl: localDayPnl, openLoss, guardedDayPnl, maxLoss, baselineEquity } }); return; }
     if (this.store.dailyTradeCount(dayStart) >= this.config.maxTradesPerDay) { this.log({ level: "warning", event: "entry.blocked_trade_count", message: "New entries blocked: daily trade limit reached." }); return; }
@@ -483,7 +524,7 @@ class AutoTrader {
 
   async run() {
     await this.queueExistingJournals();
-    this.log({ event: "worker.started", message: `Autonomous ${this.config.environment} worker started in ${this.config.mode} mode.`, details: { instruments: this.config.instruments, riskPercent: this.config.riskPercent, llmModel: this.config.llmModel, llmBaseUrl: this.config.llmBaseUrl, llmEnabled: Boolean(this.config.llmApiKey) } });
+    this.log({ event: "worker.started", message: `Autonomous ${this.config.environment} worker started in ${this.config.mode} mode with ${this.config.sizeLockScope} position-size locking.`, details: { instruments: this.config.instruments, riskPercent: this.config.riskPercent, sizeLockScope: this.config.sizeLockScope, llmModel: this.config.llmModel, llmBaseUrl: this.config.llmBaseUrl, llmEnabled: Boolean(this.config.llmApiKey) } });
     while (!this.stopping) {
       try { await this.cycle(); } catch (error) { this.log({ level: "error", event: "worker.cycle_failed", message: error instanceof Error ? error.message : "Worker cycle failed." }); }
       await new Promise((resolvePromise) => setTimeout(resolvePromise, this.config.pollMs));

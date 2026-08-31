@@ -43,3 +43,22 @@ test("uses broker-compatible price precision for FX, gold and US30", async () =>
   assert.equal(instrumentPricePrecision("XAU_USD"), 3);
   assert.equal(instrumentPricePrecision("US30_USD"), 1);
 });
+
+test("calculates USDJPY cash risk using the broker loss conversion factor", async () => {
+  const { calculateRiskSizedUnits, positionRiskAmount, standardLots } = await vite.ssrLoadModule("/lib/trade-risk.ts");
+  const sizing = calculateRiskSizedUnits({ equity: 100_000, riskPercent: 0.5, stopDistance: 0.2, lossConversionFactor: 0.0067, maxUnits: 1_000_000 });
+  assert.equal(sizing.units, 373_134);
+  assert.ok(positionRiskAmount({ units: sizing.units, stopDistance: 0.2, lossConversionFactor: 0.0067 }) <= 500);
+  assert.equal(standardLots("USD_JPY", 100_000), 1);
+  assert.equal(standardLots("XAU_USD", 100), null);
+});
+
+test("keeps a daily or weekly size fixed and blocks it when current risk is too high", async () => {
+  const { positionSizeLockPeriod, resolveLockedPositionSize } = await vite.ssrLoadModule("/lib/trade-risk.ts");
+  const date = new Date("2026-08-30T20:00:00.000Z");
+  assert.equal(positionSizeLockPeriod("daily", date), "2026-08-30");
+  assert.equal(positionSizeLockPeriod("weekly", date), "2026-08-24-week");
+  assert.deepEqual(resolveLockedPositionSize({ riskSafeUnits: 50_000 }), { ok: true, units: 50_000, created: true });
+  assert.deepEqual(resolveLockedPositionSize({ riskSafeUnits: 60_000, lockedUnits: 50_000 }), { ok: true, units: 50_000, created: false });
+  assert.equal(resolveLockedPositionSize({ riskSafeUnits: 40_000, lockedUnits: 50_000 }).ok, false);
+});

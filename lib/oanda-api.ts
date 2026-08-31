@@ -130,9 +130,9 @@ export async function closeOandaTrade(args: { token: string; environment: OandaE
       cache: "no-store",
     });
   } catch { throw new OandaApiError("OANDA could not be reached. Try again shortly.", 502); }
-  const payload = (await response.json().catch(() => ({}))) as { orderFillTransaction?: { id?: string; pl?: string; price?: string; reason?: string }; errorMessage?: string };
+  const payload = (await response.json().catch(() => ({}))) as { orderFillTransaction?: { id?: string; time?: string; pl?: string; price?: string; reason?: string }; errorMessage?: string };
   if (!response.ok) throw new OandaApiError(payload.errorMessage || `OANDA could not close trade (${response.status}).`, response.status);
-  return { transactionId: payload.orderFillTransaction?.id ?? null, pnl: Number(payload.orderFillTransaction?.pl ?? 0), price: Number(payload.orderFillTransaction?.price ?? NaN), reason: payload.orderFillTransaction?.reason ?? null };
+  return { transactionId: payload.orderFillTransaction?.id ?? null, closeTime: payload.orderFillTransaction?.time ?? null, pnl: Number(payload.orderFillTransaction?.pl ?? 0), price: Number(payload.orderFillTransaction?.price ?? NaN), reason: payload.orderFillTransaction?.reason ?? null };
 }
 
 export async function fetchOandaAccountId(token: string, environment: OandaEnvironment) {
@@ -333,12 +333,18 @@ export async function fetchOandaOrderFills(args: {
     const isClose = Boolean(transaction.tradeReduced?.tradeID || transaction.tradeClosed?.tradeID || transaction.tradesClosed?.length);
     const reason = transaction.reason ?? null;
     const price = Number(transaction.price);
+    const pnlByTradeId: Record<string, number> = {};
+    if (transaction.tradeReduced?.tradeID) pnlByTradeId[transaction.tradeReduced.tradeID] = Number(transaction.tradeReduced.realizedPL ?? 0);
+    if (transaction.tradeClosed?.tradeID) pnlByTradeId[transaction.tradeClosed.tradeID] = Number(transaction.tradeClosed.realizedPL ?? 0);
+    for (const trade of transaction.tradesClosed ?? []) if (trade.tradeID) pnlByTradeId[trade.tradeID] = Number(trade.realizedPL ?? 0);
+    for (const [tradeId, value] of Object.entries(pnlByTradeId)) if (!Number.isFinite(value)) delete pnlByTradeId[tradeId];
     return [{
       id: transaction.id,
       time: transaction.time,
       instrument: transaction.instrument ?? null,
       tradeId: tradeIds[0] ?? null,
       tradeIds,
+      pnlByTradeId,
       pnl,
       units: Number(transaction.units ?? 0),
       price: Number.isFinite(price) ? price : null,

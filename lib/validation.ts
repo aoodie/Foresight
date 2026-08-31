@@ -1,4 +1,4 @@
-import { pipSize } from "./trade-risk.ts";
+import { pipSize, standardLots } from "./trade-risk.ts";
 
 export type ValidationJournalRow = {
   id: string;
@@ -38,6 +38,7 @@ export type ValidationFill = {
   tradeId: string | null;
   tradeIds: string[];
   pnl: number;
+  pnlByTradeId?: Record<string, number>;
   units: number;
   price: number | null;
   reason: string | null;
@@ -110,7 +111,10 @@ export function buildValidationReport(input: {
     const plannedRiskDistance = plannedEntry !== null && finite(row.stop_loss) ? Math.abs(plannedEntry - row.stop_loss) : null;
     const plannedRewardDistance = plannedEntry !== null && finite(row.take_profit_1) ? Math.abs(row.take_profit_1 - plannedEntry) : null;
     const plannedR = plannedRiskDistance && plannedRewardDistance !== null ? plannedRewardDistance / plannedRiskDistance : null;
-    const fillPnl = related.filter((fill) => fill.isClose).reduce((sum, fill) => sum + fill.pnl, 0);
+    const fillPnl = related.filter((fill) => fill.isClose).reduce((sum, fill) => {
+      const allocated = row.broker_trade_id ? fill.pnlByTradeId?.[row.broker_trade_id] : undefined;
+      return sum + (Number.isFinite(allocated) ? Number(allocated) : fill.tradeIds.length === 1 ? fill.pnl : 0);
+    }, 0);
     const pnl = finite(row.pnl) ? row.pnl : related.some((fill) => fill.isClose) ? fillPnl : null;
     const realisedR = pnl !== null && finite(row.risk_amount) && row.risk_amount > 0 ? pnl / row.risk_amount : null;
     const strategyVersion = typeof metadata.strategyVersion === "string" ? metadata.strategyVersion : null;
@@ -133,6 +137,10 @@ export function buildValidationReport(input: {
       takeProfit2: finite(row.take_profit_2) ? row.take_profit_2 : null,
       actualExit,
       units: finite(row.units) ? row.units : null,
+      lots: finite(metadata.lots) ? metadata.lots : finite(row.units) ? standardLots(row.instrument, row.units) : null,
+      sizeLockScope: typeof metadata.sizeLockScope === "string" ? metadata.sizeLockScope : null,
+      sizeLockPeriod: typeof metadata.sizeLockPeriod === "string" ? metadata.sizeLockPeriod : null,
+      riskSafeUnits: finite(metadata.riskSafeUnits) ? metadata.riskSafeUnits : null,
       riskAmount: finite(row.risk_amount) ? row.risk_amount : null,
       pnl,
       plannedR,

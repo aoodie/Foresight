@@ -36,6 +36,22 @@ defaults to the OANDA Practice account. Live execution requires both
 the example environment file. Set `AUTOTRADER_AUTOCLOSE_ON_LLM_CLOSE=true`
 only after testing the review behaviour on Practice.
 
+Position size is fixed per instrument for each UTC day by default
+(`AUTOTRADER_SIZE_LOCK_SCOPE=daily`). The first qualifying setup establishes
+the size from equity, stop distance, and OANDA's loss-side home-currency
+conversion factor. Later setups for that instrument reuse the exact units. If
+those units would exceed the current cash-risk ceiling, the worker blocks the
+trade instead of increasing risk or silently changing size. Use `weekly` for a
+Monday-to-Sunday lock or `none` for dynamic risk sizing. For FX pairs, 100,000
+units equals one standard lot; USDJPY still uses its live JPY conversion factor
+when the cash-risk ceiling is checked.
+
+The Open Trades, Journal, and Validation views reconcile saved records against
+OANDA. Changes to units, stop loss, or take profit are recorded as broker
+activity. Closed trades use the broker close time, transaction, reason, price,
+and trade-level realised P/L. Reconciliation is idempotent, so refreshing a
+view repairs missing updates without duplicating trades.
+
 The worker does not call the LLM on every price update. It caches reviews and
 only requests a new review after a material price move, a review interval, or
 a released high-impact event. Broker-side stop loss and take profit remain the

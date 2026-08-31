@@ -4,7 +4,7 @@ import { getOandaToken } from "@/lib/oanda-secret";
 import { createJournalEntry, updateJournalEntry, writeSystemLog } from "@/lib/trading-records";
 import { getEconomicEventStatus } from "@/lib/economic-calendar";
 import { isOwnerRequest } from "@/lib/owner-request";
-import { calculateRiskSizedUnits, MAX_ABSOLUTE_UNITS, MAX_RISK_PERCENT, validateProtectedOrder } from "@/lib/trade-risk";
+import { calculateRiskSizedUnits, MAX_ABSOLUTE_UNITS, MAX_RISK_PERCENT, positionRiskAmount, standardLots, validateProtectedOrder } from "@/lib/trade-risk";
 
 const allowed = new Set(["EUR_USD","GBP_USD","USD_JPY","USD_CHF","AUD_USD","NZD_USD","USD_CAD","EUR_GBP","EUR_JPY","GBP_JPY","XAU_USD","US30_USD"]);
 
@@ -46,7 +46,11 @@ export async function POST(request: Request) {
   const sizing = calculateRiskSizedUnits({ equity: account.equity, riskPercent: body.riskPercent!, stopDistance: protection.stopDistance, lossConversionFactor: quote.homeConversionFactors.negativeUnits });
   if (!sizing) return NextResponse.json({ error: "Order blocked because a safe position size could not be calculated from the live quote." }, { status: 409 });
   if (Math.abs(body.units!) > sizing.units) return NextResponse.json({ error: `Order blocked: ${Math.abs(body.units!).toLocaleString()} units exceeds the live ${body.riskPercent}% risk limit of ${sizing.units.toLocaleString()} units.` }, { status: 409 });
+  const actualRiskAmount = positionRiskAmount({ units: Math.abs(body.units!), stopDistance: protection.stopDistance, lossConversionFactor: quote.homeConversionFactors.negativeUnits });
+  if (actualRiskAmount === null) return NextResponse.json({ error: "Order blocked because the cash risk for these units could not be verified." }, { status: 409 });
   const journal = body.journal ?? {};
+  const journalMetadata = journal.metadata && typeof journal.metadata === "object" ? journal.metadata as Record<string, unknown> : {};
+  const lots = standardLots(body.instrument!, body.units!);
   const correlationId = crypto.randomUUID();
   let journalId: string | null = null;
   let orderSubmitted = false;
@@ -65,13 +69,13 @@ export async function POST(request: Request) {
       takeProfit1: body.takeProfit ?? null,
       takeProfit2: typeof journal.takeProfit2 === "number" ? journal.takeProfit2 : null,
       units: body.units,
-      lots: typeof journal.lots === "number" ? journal.lots : null,
+      lots,
       riskPercent: body.riskPercent ?? null,
-      riskAmount: sizing.riskAmount,
+      riskAmount: actualRiskAmount,
       thesis: typeof journal.thesis === "string" ? journal.thesis : null,
       evidence: typeof journal.evidence === "string" ? journal.evidence : null,
       invalidation: typeof journal.invalidation === "string" ? journal.invalidation : null,
-      metadata: journal.metadata,
+      metadata: { ...journalMetadata, lots, riskSafeUnits: sizing.units, submittedUnits: Math.abs(body.units!), stopDistance: protection.stopDistance, lossConversionFactor: quote.homeConversionFactors.negativeUnits },
       openedAt: null,
     });
     await writeSystemLog({ category: "execution", event: "order.requested", message: `OANDA ${connection.environment} order requested for ${body.instrument}.`, instrument: body.instrument, environment: connection.environment, correlationId, details: { journalId, units: body.units, stopLoss: body.stopLoss, takeProfit: body.takeProfit } });
@@ -84,12 +88,12 @@ export async function POST(request: Request) {
       : "OANDA filled the order without opening a new trade; it reduced or closed an existing position.";
     let journalWarning: string | null = null;
     try {
-      await updateJournalEntry({ id: journalId, status, brokerTradeId, pnl: brokerTradeId ? null : result.realisedPnl, notes, openedAt: result.fillTime, metadata: { fillTransactionId: result.fillTransactionId, fillPrice: result.fillPrice, fillTime: result.fillTime, reducedTradeId: result.reducedTradeId, closedTradeIds: result.closedTradeIds, riskReward: protection.riskReward } });
-      await writeSystemLog({ category: "execution", event: brokerTradeId ? "order.submitted" : "order.netted", message: notes, instrument: body.instrument, environment: connection.environment, correlationId, details: { journalId, brokerTradeId, orderId: result.orderId, fillTransactionId: result.fillTransactionId, units: body.units, riskAmount: sizing.riskAmount, riskReward: protection.riskReward } });
+      await updateJournalEntry({ id: journalId, status, brokerTradeId, pnl: brokerTradeId ? null : result.realisedPnl, notes, openedAt: result.fillTime, closedAt: brokerTradeId ? null : result.fillTime, metadata: { fillTransactionId: result.fillTransactionId, fillPrice: result.fillPrice, fillTime: result.fillTime, reducedTradeId: result.reducedTradeId, closedTradeIds: result.closedTradeIds, riskReward: protection.riskReward, closeTime: brokerTradeId ? null : result.fillTime } });
+      await writeSystemLog({ category: "execution", event: brokerTradeId ? "order.submitted" : "order.netted", message: notes, instrument: body.instrument, environment: connection.environment, correlationId, details: { journalId, brokerTradeId, orderId: result.orderId, fillTransactionId: result.fillTransactionId, units: body.units, lots, riskSafeUnits: sizing.units, riskAmount: actualRiskAmount, riskReward: protection.riskReward, lossConversionFactor: quote.homeConversionFactors.negativeUnits } });
     } catch (error) {
       journalWarning = error instanceof Error ? error.message : "The filled order could not be written to the journal.";
     }
-    return NextResponse.json({ mode: "live", accountEnvironment: connection.environment, status: brokerTradeId ? "submitted" : "netted", journalId, journalWarning, ...result });
+    return NextResponse.json({ mode: "live", accountEnvironment: connection.environment, status: brokerTradeId ? "submitted" : "netted", journalId, journalWarning, sizing: { units: Math.abs(body.units!), lots, riskSafeUnits: sizing.units, riskAmount: actualRiskAmount }, ...result });
   } catch (error) {
     if (journalId && !orderSubmitted) {
       try { await updateJournalEntry({ id: journalId, status: "cancelled", notes: error instanceof Error ? error.message : "Order submission failed." }); } catch { /* Preserve the original order error. */ }
