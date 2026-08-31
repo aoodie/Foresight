@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { NextResponse } from "next/server";
-import { createJournalEntry, updateJournalByBrokerTradeId, writeSystemLog } from "@/lib/trading-records";
+import { createJournalEntry, updateJournalByBrokerTradeId, updateJournalEntry, writeSystemLog } from "@/lib/trading-records";
 
 type RuntimeEnv = { AUTOTRADER_WEBHOOK_SECRET?: string };
 const runtime = env as unknown as RuntimeEnv;
@@ -39,13 +39,18 @@ export async function POST(request: Request) {
     if (!required.every((key) => typeof payload[key] === "string")) return NextResponse.json({ error: "Journal event is missing required fields." }, { status: 400 });
     const id = await createJournalEntry({
       id: String(payload.id), environment: String(payload.environment), accountId: String(payload.accountId), instrument: String(payload.instrument), direction: String(payload.direction), style: String(payload.style),
-      strategyName: stringOrNull(payload.strategyName), setupType: stringOrNull(payload.setupType), status: stringOrNull(payload.status) ?? "open", entryPrice: numberOrNull(payload.entryPrice), stopLoss: numberOrNull(payload.stopLoss), takeProfit1: numberOrNull(payload.takeProfit1), takeProfit2: numberOrNull(payload.takeProfit2), units: numberOrNull(payload.units), lots: numberOrNull(payload.lots), riskPercent: numberOrNull(payload.riskPercent), riskAmount: numberOrNull(payload.riskAmount), brokerTradeId: stringOrNull(payload.brokerTradeId), thesis: stringOrNull(payload.thesis), evidence: stringOrNull(payload.evidence), invalidation: stringOrNull(payload.invalidation), metadata: payload.metadata,
+      strategyName: stringOrNull(payload.strategyName), setupType: stringOrNull(payload.setupType), status: stringOrNull(payload.status) ?? "open", entryPrice: numberOrNull(payload.entryPrice), stopLoss: numberOrNull(payload.stopLoss), takeProfit1: numberOrNull(payload.takeProfit1), takeProfit2: numberOrNull(payload.takeProfit2), units: numberOrNull(payload.units), lots: numberOrNull(payload.lots), riskPercent: numberOrNull(payload.riskPercent), riskAmount: numberOrNull(payload.riskAmount), pnl: numberOrNull(payload.pnl), brokerTradeId: stringOrNull(payload.brokerTradeId), thesis: stringOrNull(payload.thesis), evidence: stringOrNull(payload.evidence), invalidation: stringOrNull(payload.invalidation), openedAt: stringOrNull(payload.openedAt), closedAt: stringOrNull(payload.closedAt), metadata: payload.metadata,
     });
     return NextResponse.json({ ok: true, id });
   }
   if (body.type === "journal.update") {
     if (typeof payload.brokerTradeId !== "string" || typeof payload.status !== "string") return NextResponse.json({ error: "Journal update is missing brokerTradeId or status." }, { status: 400 });
-    await updateJournalByBrokerTradeId({ brokerTradeId: payload.brokerTradeId, status: payload.status, pnl: numberOrNull(payload.pnl), notes: stringOrNull(payload.notes) });
+    if (typeof payload.journalId === "string") {
+      const matched = await updateJournalEntry({ id: payload.journalId, status: payload.status, pnl: numberOrNull(payload.pnl), brokerTradeId: payload.brokerTradeId, notes: stringOrNull(payload.notes) });
+      if (!matched) await updateJournalByBrokerTradeId({ brokerTradeId: payload.brokerTradeId, status: payload.status, pnl: numberOrNull(payload.pnl), notes: stringOrNull(payload.notes) });
+    } else {
+      await updateJournalByBrokerTradeId({ brokerTradeId: payload.brokerTradeId, status: payload.status, pnl: numberOrNull(payload.pnl), notes: stringOrNull(payload.notes) });
+    }
     return NextResponse.json({ ok: true });
   }
   return NextResponse.json({ error: "Unsupported autonomous-worker event." }, { status: 400 });

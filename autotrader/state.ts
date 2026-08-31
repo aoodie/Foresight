@@ -22,6 +22,13 @@ export type WorkerJournalInput = {
   metadata?: unknown;
 };
 
+export type WorkerJournalRow = WorkerJournalInput & {
+  created_at: string;
+  updated_at: string;
+  pnl: number | null;
+  closed_at: string | null;
+};
+
 export type WorkerEvent = {
   level?: "info" | "warning" | "error";
   event: string;
@@ -82,6 +89,18 @@ export class WorkerState {
         model TEXT NOT NULL,
         output_json TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS worker_sync_queue (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_key TEXT NOT NULL UNIQUE,
+        event_type TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at TEXT NOT NULL,
+        last_error TEXT,
+        delivered_at TEXT
+      );
     `);
   }
 
@@ -125,9 +144,58 @@ export class WorkerState {
       .run(status, pnl ?? null, status, new Date().toISOString(), new Date().toISOString(), notes ?? null, notes ?? null, brokerTradeId);
   }
 
-  managedOpenTrades(): Array<{ broker_trade_id: string; instrument: string; status: string }> {
-    return this.db.prepare("SELECT broker_trade_id, instrument, status FROM worker_journal WHERE broker_trade_id IS NOT NULL AND status IN ('submitted', 'open')")
-      .all() as Array<{ broker_trade_id: string; instrument: string; status: string }>;
+  managedOpenTrades(): Array<{ id: string; broker_trade_id: string; instrument: string; status: string }> {
+    return this.db.prepare("SELECT id, broker_trade_id, instrument, status FROM worker_journal WHERE broker_trade_id IS NOT NULL AND status IN ('submitted', 'open')")
+      .all() as Array<{ id: string; broker_trade_id: string; instrument: string; status: string }>;
+  }
+
+  journalRows(): WorkerJournalRow[] {
+    const rows = this.db.prepare("SELECT id, broker_trade_id, environment, account_id, instrument, direction, style, strategy_name, entry_price, stop_loss, take_profit_1, take_profit_2, units, risk_percent, risk_amount, status, metadata_json, created_at, updated_at, pnl, closed_at FROM worker_journal ORDER BY created_at ASC")
+      .all() as Array<Record<string, unknown>>;
+    return rows.map((row) => ({
+      id: String(row.id), brokerTradeId: row.broker_trade_id == null ? null : String(row.broker_trade_id),
+      environment: String(row.environment), accountId: String(row.account_id), instrument: String(row.instrument),
+      direction: String(row.direction) as "long" | "short", style: String(row.style), strategyName: String(row.strategy_name),
+      entryPrice: Number(row.entry_price), stopLoss: Number(row.stop_loss), takeProfit1: Number(row.take_profit_1),
+      takeProfit2: row.take_profit_2 == null ? null : Number(row.take_profit_2), units: Number(row.units),
+      riskPercent: Number(row.risk_percent), riskAmount: Number(row.risk_amount), status: String(row.status),
+      metadata: row.metadata_json == null ? undefined : this.parseMetadata(row.metadata_json),
+      created_at: String(row.created_at), updated_at: String(row.updated_at), pnl: row.pnl == null ? null : Number(row.pnl),
+      closed_at: row.closed_at == null ? null : String(row.closed_at),
+    }));
+  }
+
+  private parseMetadata(value: unknown) {
+    try { return JSON.parse(String(value)); } catch { return undefined; }
+  }
+
+  enqueueSync(eventKey: string, eventType: string, payload: unknown) {
+    const now = new Date().toISOString();
+    this.db.prepare(`INSERT INTO worker_sync_queue (event_key, event_type, payload_json, created_at, updated_at, next_attempt_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(event_key) DO UPDATE SET payload_json = excluded.payload_json, updated_at = excluded.updated_at,
+        next_attempt_at = CASE WHEN worker_sync_queue.delivered_at IS NULL THEN excluded.next_attempt_at ELSE worker_sync_queue.next_attempt_at END,
+        last_error = CASE WHEN worker_sync_queue.delivered_at IS NULL THEN NULL ELSE worker_sync_queue.last_error END`)
+      .run(eventKey, eventType, JSON.stringify(payload), now, now, now);
+  }
+
+  dueSyncEvents(limit = 20): Array<{ id: number; event_type: string; payload_json: string; attempts: number }> {
+    return this.db.prepare("SELECT id, event_type, payload_json, attempts FROM worker_sync_queue WHERE delivered_at IS NULL AND next_attempt_at <= ? ORDER BY id ASC LIMIT ?")
+      .all(new Date().toISOString(), limit) as Array<{ id: number; event_type: string; payload_json: string; attempts: number }>;
+  }
+
+  markSyncDelivered(id: number) {
+    this.db.prepare("UPDATE worker_sync_queue SET delivered_at = ?, updated_at = ?, last_error = NULL WHERE id = ?")
+      .run(new Date().toISOString(), new Date().toISOString(), id);
+  }
+
+  markSyncFailed(id: number, error: string) {
+    const row = this.db.prepare("SELECT attempts FROM worker_sync_queue WHERE id = ?").get(id) as { attempts?: number } | undefined;
+    const attempts = Number(row?.attempts ?? 0) + 1;
+    const delayMs = Math.min(60 * 60 * 1000, 5000 * (2 ** Math.min(attempts - 1, 8)));
+    const nextAttempt = new Date(Date.now() + delayMs).toISOString();
+    this.db.prepare("UPDATE worker_sync_queue SET attempts = ?, next_attempt_at = ?, updated_at = ?, last_error = ? WHERE id = ?")
+      .run(attempts, nextAttempt, new Date().toISOString(), error.slice(0, 1000), id);
   }
 
   dailyPnl(dayStart: Date) {

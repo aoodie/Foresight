@@ -39,7 +39,8 @@ function json(value: unknown) {
 export async function createJournalEntry(input: JournalRecordInput) {
   const id = input.id ?? crypto.randomUUID();
   const now = new Date().toISOString();
-  await runtime.DB.prepare(`INSERT INTO trade_journal (id, created_at, updated_at, environment, account_id, instrument, direction, style, strategy_name, setup_type, status, entry_price, stop_loss, take_profit_1, take_profit_2, units, lots, risk_percent, risk_amount, pnl, broker_trade_id, thesis, evidence, invalidation, notes, opened_at, closed_at, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
+  await runtime.DB.prepare(`INSERT INTO trade_journal (id, created_at, updated_at, environment, account_id, instrument, direction, style, strategy_name, setup_type, status, entry_price, stop_loss, take_profit_1, take_profit_2, units, lots, risk_percent, risk_amount, pnl, broker_trade_id, thesis, evidence, invalidation, notes, opened_at, closed_at, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO NOTHING`).bind(
     id, now, now, input.environment, input.accountId ?? null, input.instrument, input.direction, input.style,
     input.strategyName ?? null, input.setupType ?? null, input.status ?? "planned", input.entryPrice ?? null,
     input.stopLoss ?? null, input.takeProfit1 ?? null, input.takeProfit2 ?? null, input.units ?? null,
@@ -51,13 +52,19 @@ export async function createJournalEntry(input: JournalRecordInput) {
 }
 
 export async function updateJournalEntry(input: { id: string; status?: string; pnl?: number | null; brokerTradeId?: string | null; notes?: string | null; closedAt?: string | null; }) {
-  await runtime.DB.prepare("UPDATE trade_journal SET status = COALESCE(?, status), pnl = COALESCE(?, pnl), broker_trade_id = COALESCE(?, broker_trade_id), notes = COALESCE(?, notes), closed_at = COALESCE(?, closed_at), updated_at = ? WHERE id = ?")
-    .bind(input.status ?? null, input.pnl ?? null, input.brokerTradeId ?? null, input.notes ?? null, input.closedAt ?? null, new Date().toISOString(), input.id).run();
+  const now = new Date().toISOString();
+  const closedAt = input.closedAt ?? (input.status && ["closed", "cancelled", "win", "loss", "breakeven"].includes(input.status) ? now : null);
+  const result = await runtime.DB.prepare("UPDATE trade_journal SET status = COALESCE(?, status), pnl = COALESCE(?, pnl), broker_trade_id = COALESCE(?, broker_trade_id), notes = COALESCE(?, notes), closed_at = COALESCE(?, closed_at), updated_at = ? WHERE id = ?")
+    .bind(input.status ?? null, input.pnl ?? null, input.brokerTradeId ?? null, input.notes ?? null, closedAt, now, input.id).run();
+  return Number(result.meta?.changes ?? 0);
 }
 
 export async function updateJournalByBrokerTradeId(input: { brokerTradeId: string; status: string; pnl?: number | null; notes?: string | null }) {
-  await runtime.DB.prepare("UPDATE trade_journal SET status = ?, pnl = COALESCE(?, pnl), notes = COALESCE(?, notes), closed_at = ?, updated_at = ? WHERE broker_trade_id = ?")
-    .bind(input.status, input.pnl ?? null, input.notes ?? null, new Date().toISOString(), new Date().toISOString(), input.brokerTradeId).run();
+  const now = new Date().toISOString();
+  const closedAt = ["closed", "cancelled", "win", "loss", "breakeven"].includes(input.status) ? now : null;
+  const result = await runtime.DB.prepare("UPDATE trade_journal SET status = ?, pnl = COALESCE(?, pnl), notes = COALESCE(?, notes), closed_at = COALESCE(?, closed_at), updated_at = ? WHERE broker_trade_id = ?")
+    .bind(input.status, input.pnl ?? null, input.notes ?? null, closedAt, now, input.brokerTradeId).run();
+  return Number(result.meta?.changes ?? 0);
 }
 
 export async function writeSystemLog(input: {

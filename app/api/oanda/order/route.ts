@@ -25,8 +25,10 @@ export async function POST(request: Request) {
   }
   const journal = body.journal ?? {};
   const correlationId = crypto.randomUUID();
+  let journalId: string | null = null;
+  let orderSubmitted = false;
   try {
-    const journalId = await createJournalEntry({
+    journalId = await createJournalEntry({
       environment: connection.environment,
       accountId: connection?.accountId ?? null,
       instrument: body.instrument!,
@@ -51,10 +53,15 @@ export async function POST(request: Request) {
     });
     await writeSystemLog({ category: "execution", event: "order.requested", message: `OANDA ${connection.environment} order requested for ${body.instrument}.`, instrument: body.instrument, environment: connection.environment, correlationId, details: { journalId, units: body.units, stopLoss: body.stopLoss, takeProfit: body.takeProfit } });
     const result = await submitOandaMarketOrder({ token: connection.token, environment: connection.environment, accountId: connection.accountId, instrument: body.instrument!, units: body.units!, stopLoss: body.stopLoss, takeProfit: body.takeProfit });
-    await updateJournalEntry({ id: journalId, status: "open", brokerTradeId: result.orderId, notes: `OANDA ${connection.environment} order submitted.` });
-    await writeSystemLog({ category: "execution", event: "order.submitted", message: `OANDA ${connection.environment} order submitted for ${body.instrument}.`, instrument: body.instrument, environment: connection.environment, correlationId, details: { journalId, brokerTradeId: result.orderId, units: body.units } });
+    orderSubmitted = true;
+    const brokerTradeId = result.tradeId ?? result.orderId;
+    await updateJournalEntry({ id: journalId, status: "open", brokerTradeId, notes: `OANDA ${connection.environment} order submitted.` });
+    await writeSystemLog({ category: "execution", event: "order.submitted", message: `OANDA ${connection.environment} order submitted for ${body.instrument}.`, instrument: body.instrument, environment: connection.environment, correlationId, details: { journalId, brokerTradeId, orderId: result.orderId, units: body.units } });
     return NextResponse.json({ mode: "live", accountEnvironment: connection.environment, status: "submitted", journalId, ...result });
   } catch (error) {
+    if (journalId && !orderSubmitted) {
+      try { await updateJournalEntry({ id: journalId, status: "cancelled", notes: error instanceof Error ? error.message : "Order submission failed." }); } catch { /* Preserve the original order error. */ }
+    }
     try { await writeSystemLog({ level: "error", category: "execution", event: "order.failed", message: error instanceof Error ? error.message : "Order submission failed.", instrument: body.instrument, environment: connection.environment, correlationId }); } catch { /* Preserve the original order error. */ }
     const status = error instanceof OandaApiError ? error.status : 500;
     return NextResponse.json({ error: error instanceof Error ? error.message : "Unable to submit order." }, { status });

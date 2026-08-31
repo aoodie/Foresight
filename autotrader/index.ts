@@ -15,7 +15,7 @@ import { getEconomicEventStatus } from "../lib/economic-calendar.ts";
 import { analyseInstrument, combineTimeframes, timeframeProfiles, type ScannerResult, type TimeframeMode } from "../lib/market-scanner.ts";
 import { reviewLiveTrade, type LiveTradeReview } from "../lib/openai-strategy.ts";
 import { defaultAiBaseUrl, normalizeAiBaseUrl } from "../lib/ai-config.ts";
-import { WorkerState, type WorkerEvent } from "./state.ts";
+import { WorkerState, type WorkerEvent, type WorkerJournalRow } from "./state.ts";
 
 type Config = {
   enabled: boolean;
@@ -147,6 +147,7 @@ class AutoTrader {
   private stopping = false;
   private lastScanAt = 0;
   private lastHeartbeatAt = 0;
+  private syncTail: Promise<void> = Promise.resolve();
   private newsCache = new Map<string, { expiresAt: number; value: Awaited<ReturnType<typeof getEconomicEventStatus>> }>();
   private analysisCache = new Map<string, { expiresAt: number; value: ScannerResult }>();
 
@@ -160,16 +161,59 @@ class AutoTrader {
     process.once("SIGINT", () => this.stop());
   }
 
-  private async sync(type: string, payload: unknown) {
+  private sync(type: string, payload: unknown, eventKey = `${type}:${randomUUID()}`) {
+    this.syncTail = this.syncTail.then(() => this.syncNow(type, payload, eventKey), () => this.syncNow(type, payload, eventKey));
+    return this.syncTail;
+  }
+
+  private async syncNow(type: string, payload: unknown, eventKey: string) {
     if (!this.config.dashboardUrl || !this.config.webhookSecret) return;
-    try {
-      await fetch(`${this.config.dashboardUrl.replace(/\/$/, "")}/api/autotrader/events`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Autotrader-Secret": this.config.webhookSecret },
-        body: JSON.stringify({ type, payload }),
-        signal: AbortSignal.timeout(8000),
-      });
-    } catch { /* Dashboard sync must never stop broker protection or trading safety. */ }
+    this.store.enqueueSync(eventKey, type, payload);
+    await this.flushSyncQueue();
+  }
+
+  private async flushSyncQueue() {
+    if (!this.config.dashboardUrl || !this.config.webhookSecret) return;
+    for (const queued of this.store.dueSyncEvents()) {
+      try {
+        const response = await fetch(`${this.config.dashboardUrl.replace(/\/$/, "")}/api/autotrader/events`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Autotrader-Secret": this.config.webhookSecret },
+          body: JSON.stringify({ type: queued.event_type, payload: JSON.parse(queued.payload_json) }),
+          signal: AbortSignal.timeout(8000),
+        });
+        if (!response.ok) throw new Error(`Dashboard journal sync returned HTTP ${response.status}.`);
+        this.store.markSyncDelivered(queued.id);
+      } catch (error) {
+        this.store.markSyncFailed(queued.id, error instanceof Error ? error.message : "Dashboard sync failed.");
+        this.store.event({ level: "warning", event: "dashboard.sync_failed", message: error instanceof Error ? error.message : "Dashboard sync failed.", details: { queueId: queued.id, eventType: queued.event_type, attempts: queued.attempts + 1 } });
+        break;
+      }
+    }
+  }
+
+  private journalCreatePayload(row: WorkerJournalRow) {
+    return {
+      id: row.id, environment: row.environment, accountId: row.accountId, instrument: row.instrument,
+      direction: row.direction, style: row.style, strategyName: row.strategyName, status: row.status,
+      entryPrice: row.entryPrice, stopLoss: row.stopLoss, takeProfit1: row.takeProfit1, takeProfit2: row.takeProfit2,
+      units: row.units, riskPercent: row.riskPercent, riskAmount: row.riskAmount, brokerTradeId: row.brokerTradeId,
+      openedAt: row.created_at, closedAt: row.closed_at, pnl: row.pnl, metadata: row.metadata,
+    };
+  }
+
+  private async queueExistingJournals() {
+    if (!this.config.dashboardUrl || !this.config.webhookSecret) return;
+    for (const row of this.store.journalRows()) {
+      await this.sync("journal.create", this.journalCreatePayload(row), `journal.create:${row.id}`);
+      if (row.brokerTradeId && ["closed", "cancelled", "win", "loss", "breakeven"].includes(row.status)) {
+        await this.syncJournalUpdate({ id: row.id, brokerTradeId: row.brokerTradeId }, row.status, row.pnl ?? 0, "Recovered local journal outcome during worker startup reconciliation.");
+      }
+    }
+  }
+
+  private async syncJournalUpdate(row: { id: string; brokerTradeId: string }, status: string, pnl: number, notes: string) {
+    await this.sync("journal.update", { journalId: row.id, brokerTradeId: row.brokerTradeId, status, pnl, notes }, `journal.update:${row.id}:${status}`);
   }
 
   private log(input: WorkerEvent) {
@@ -236,22 +280,26 @@ class AutoTrader {
     this.log({ level: review.drifted || review.decision === "close" ? "warning" : "info", event: cached ? "strategy.review_cache_hit" : "strategy.reviewed", message: `${trade.instrument}: LLM decision ${review.decision} (${review.sentiment}). ${review.explanation}`, instrument: trade.instrument, details: { tradeId: trade.id, model: this.config.llmModel, cacheHit: Boolean(cached), confidence: review.confidence, eventContext } });
     if (review.decision === "close" && review.confidence >= 70 && this.config.autoCloseOnLlmClose) {
       const closed = await closeOandaTrade({ token: this.config.token, environment: this.config.environment, accountId: this.config.accountId, tradeId: trade.id });
+      const managed = this.store.managedOpenTrades().find((row) => row.broker_trade_id === trade.id);
       this.store.journalUpdateByBrokerTradeId(trade.id, "closed", closed.pnl, "Closed automatically after high-confidence LLM close decision.");
-      await this.sync("journal.update", { brokerTradeId: trade.id, status: "closed", pnl: closed.pnl, notes: "Closed automatically after high-confidence LLM close decision." });
+      if (managed) await this.syncJournalUpdate({ id: managed.id, brokerTradeId: trade.id }, "closed", closed.pnl, "Closed automatically after high-confidence LLM close decision.");
       this.log({ level: "warning", event: "trade.closed_by_policy", message: `Closed ${trade.instrument} after a high-confidence LLM close decision.`, instrument: trade.instrument, details: { tradeId: trade.id, pnl: closed.pnl } });
     }
   }
 
   private async monitorTrades(trades: Awaited<ReturnType<typeof fetchOandaOpenTrades>>) {
-    const managedIds = new Set(this.store.managedOpenTrades().map((row) => row.broker_trade_id));
+    await this.flushSyncQueue();
+    const managedRows = this.store.managedOpenTrades();
+    const managedIds = new Set(managedRows.map((row) => row.broker_trade_id));
     for (const trade of trades) {
       if (!managedIds.has(trade.id)) continue;
       if (!trade.stopLoss || !trade.takeProfit) {
         this.log({ level: "error", event: "trade.unprotected", message: `${trade.instrument} trade ${trade.id} has no broker-side stop and target.`, instrument: trade.instrument, details: { tradeId: trade.id } });
         if (this.config.closeUnprotected) {
           const closed = await closeOandaTrade({ token: this.config.token, environment: this.config.environment, accountId: this.config.accountId, tradeId: trade.id });
+          const managed = managedRows.find((row) => row.broker_trade_id === trade.id);
           this.store.journalUpdateByBrokerTradeId(trade.id, "closed", closed.pnl, "Closed because broker-side protection was missing.");
-          await this.sync("journal.update", { brokerTradeId: trade.id, status: "closed", pnl: closed.pnl, notes: "Closed because broker-side protection was missing." });
+          if (managed) await this.syncJournalUpdate({ id: managed.id, brokerTradeId: trade.id }, "closed", closed.pnl, "Closed because broker-side protection was missing.");
         }
         continue;
       }
@@ -262,11 +310,11 @@ class AutoTrader {
     }
     const currentIds = new Set(trades.map((trade) => trade.id));
     const recentFills = await fetchOandaOrderFills({ token: this.config.token, environment: this.config.environment, accountId: this.config.accountId, from: startOfUtcDay() });
-    for (const managed of managedIds) {
-      if (currentIds.has(managed)) continue;
-      const pnl = recentFills.filter((fill) => fill.tradeId === managed).reduce((sum, fill) => sum + fill.pnl, 0);
-      this.store.journalUpdateByBrokerTradeId(managed, "closed", pnl, "Trade no longer open at OANDA; reconciled from transaction history.");
-      await this.sync("journal.update", { brokerTradeId: managed, status: "closed", pnl, notes: "Trade no longer open at OANDA; reconciled from transaction history." });
+    for (const managed of managedRows) {
+      if (currentIds.has(managed.broker_trade_id)) continue;
+      const pnl = recentFills.filter((fill) => fill.tradeId === managed.broker_trade_id).reduce((sum, fill) => sum + fill.pnl, 0);
+      this.store.journalUpdateByBrokerTradeId(managed.broker_trade_id, "closed", pnl, "Trade no longer open at OANDA; reconciled from transaction history.");
+      await this.syncJournalUpdate({ id: managed.id, brokerTradeId: managed.broker_trade_id }, "closed", pnl, "Trade no longer open at OANDA; reconciled from transaction history.");
     }
   }
 
@@ -305,7 +353,7 @@ class AutoTrader {
     const brokerTradeId = order.tradeId ?? order.orderId;
     this.store.set(`signal:${signalKey}`, Date.now());
     this.store.journalCreate({ id: journalId, brokerTradeId, environment: this.config.environment, accountId: this.config.accountId, instrument: result.instrument, direction: bias, style: this.config.mode, strategyName: result.selectedStrategy?.name ?? "Multi-timeframe trend continuation", entryPrice: plan.entry!, stopLoss: result.stopLoss!, takeProfit1: result.takeProfit1!, takeProfit2: result.takeProfit2, units: direction * sizing.units, riskPercent: this.config.riskPercent, riskAmount: sizing.riskAmount, status: "open", metadata: { score: result.score, confirmations: result.confirmations, selectedStrategy: result.selectedStrategy, timeframes: result.timeframeAlignment, clientId } });
-    await this.sync("journal.create", { id: journalId, environment: this.config.environment, accountId: this.config.accountId, instrument: result.instrument, direction: bias, style: this.config.mode, strategyName: result.selectedStrategy?.name ?? "Multi-timeframe trend continuation", setupType: "autonomous", status: "open", entryPrice: plan.entry, stopLoss: result.stopLoss, takeProfit1: result.takeProfit1, takeProfit2: result.takeProfit2, units: direction * sizing.units, lots: Math.abs(sizing.units) / 100000, riskPercent: this.config.riskPercent, riskAmount: sizing.riskAmount, brokerTradeId, metadata: { score: result.score, confirmations: result.confirmations, clientId } });
+    await this.sync("journal.create", { id: journalId, environment: this.config.environment, accountId: this.config.accountId, instrument: result.instrument, direction: bias, style: this.config.mode, strategyName: result.selectedStrategy?.name ?? "Multi-timeframe trend continuation", setupType: "autonomous", status: "open", entryPrice: plan.entry, stopLoss: result.stopLoss, takeProfit1: result.takeProfit1, takeProfit2: result.takeProfit2, units: direction * sizing.units, lots: Math.abs(sizing.units) / 100000, riskPercent: this.config.riskPercent, riskAmount: sizing.riskAmount, brokerTradeId, openedAt: new Date().toISOString(), metadata: { score: result.score, confirmations: result.confirmations, clientId } }, `journal.create:${journalId}`);
     this.log({ event: "trade.opened", message: `Opened ${bias} ${result.instrument} with ${Math.abs(sizing.units)} units.`, instrument: result.instrument, details: { brokerTradeId, journalId, score: result.score, confirmations: result.confirmations, entry: plan.entry, stopLoss: result.stopLoss, takeProfit: result.takeProfit2 ?? result.takeProfit1, riskAmount: sizing.riskAmount } });
   }
 
@@ -332,6 +380,7 @@ class AutoTrader {
   }
 
   async run() {
+    await this.queueExistingJournals();
     this.log({ event: "worker.started", message: `Autonomous ${this.config.environment} worker started in ${this.config.mode} mode.`, details: { instruments: this.config.instruments, riskPercent: this.config.riskPercent, llmModel: this.config.llmModel, llmBaseUrl: this.config.llmBaseUrl, llmEnabled: Boolean(this.config.llmApiKey) } });
     while (!this.stopping) {
       try { await this.cycle(); } catch (error) { this.log({ level: "error", event: "worker.cycle_failed", message: error instanceof Error ? error.message : "Worker cycle failed." }); }
