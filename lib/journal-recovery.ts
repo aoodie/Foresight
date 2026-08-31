@@ -64,8 +64,9 @@ export function missingJournalRecordsFromFills(input: {
 
   for (const entry of input.fills) {
     const tradeId = entry.openedTradeId;
-    const source = foresightTradeSource(entry.clientTag);
-    if (!entry.isEntry || !tradeId || !source || input.knownBrokerIds.has(tradeId) || !entry.instrument || !entry.units) continue;
+    const taggedSource = foresightTradeSource(entry.clientTag);
+    const source = taggedSource ?? "broker_account";
+    if (!entry.isEntry || !tradeId || input.knownBrokerIds.has(tradeId) || !entry.instrument || !entry.units) continue;
     const closes = input.fills.filter((fill) => fill.isClose && fill.tradeIds.includes(tradeId)).sort((a, b) => a.time.localeCompare(b.time));
     const latestClose = closes.at(-1) ?? null;
     const openTrade = openById.get(tradeId) ?? null;
@@ -82,7 +83,7 @@ export function missingJournalRecordsFromFills(input: {
       instrument: entry.instrument,
       direction: entry.units > 0 ? "long" : "short",
       style: entry.clientComment || "intraday",
-      strategyName: source === "autonomous" ? "Autotrader recovery" : "Dashboard trade recovery",
+      strategyName: source === "autonomous" ? "Autotrader recovery" : source === "dashboard_manual" ? "Dashboard trade recovery" : "OANDA broker import",
       status,
       entryPrice: entry.price,
       stopLoss: openTrade?.stopLoss ?? null,
@@ -92,13 +93,13 @@ export function missingJournalRecordsFromFills(input: {
       pnl: status === "closed" ? pnl : null,
       brokerTradeId: tradeId,
       notes: status === "closed"
-        ? `${closeReason}. Recovered directly from tagged OANDA entry and close transactions.`
-        : "Recovered directly from a tagged OANDA entry transaction because its journal event was missing.",
+        ? `${closeReason}. Recovered directly from OANDA entry and close transactions.`
+        : "Recovered directly from an OANDA entry transaction because its journal event was missing.",
       openedAt: entry.time,
       closedAt: status === "closed" ? latestClose!.time : null,
       metadata: {
         recoveredFromBroker: true,
-        recoverySource: "tagged_entry_fill",
+        recoverySource: taggedSource ? "tagged_entry_fill" : "broker_entry_fill",
         source,
         entryTransactionId: entry.id,
         clientId: entry.clientId,
