@@ -14,6 +14,7 @@ import {
 import { getEconomicEventStatus } from "../lib/economic-calendar.ts";
 import { analyseInstrument, combineTimeframes, timeframeProfiles, type ScannerResult, type TimeframeMode } from "../lib/market-scanner.ts";
 import { reviewLiveTrade, type LiveTradeReview } from "../lib/openai-strategy.ts";
+import { defaultAiBaseUrl, normalizeAiBaseUrl } from "../lib/ai-config.ts";
 import { WorkerState, type WorkerEvent } from "./state.ts";
 
 type Config = {
@@ -36,6 +37,7 @@ type Config = {
   maxUnits: number;
   llmApiKey?: string;
   llmModel: string;
+  llmBaseUrl: string;
   llmReviewMs: number;
   llmMoveAtrFraction: number;
   heartbeatMs: number;
@@ -90,6 +92,7 @@ function loadConfig(): Config {
     maxUnits: Math.max(1, Math.floor(numberEnv("MAX_UNITS", 1000000))),
     llmApiKey: process.env.OPENAI_API_KEY?.trim() || undefined,
     llmModel: process.env.LLM_MODEL?.trim() || "gpt-5.5",
+    llmBaseUrl: normalizeAiBaseUrl(process.env.LLM_BASE_URL?.trim() || defaultAiBaseUrl),
     llmReviewMs: Math.max(300000, numberEnv("LLM_REVIEW_MS", 900000)),
     llmMoveAtrFraction: Math.max(0.1, numberEnv("LLM_MOVE_ATR_FRACTION", 0.25)),
     heartbeatMs: Math.max(30000, numberEnv("AUTOTRADER_HEARTBEAT_MS", 60000)),
@@ -225,9 +228,9 @@ class AutoTrader {
     if (!materiallyMoved) return;
     const technicalSnapshot = result ? { bias: result.bias, score: result.score, rsi: result.rsi, atrPercent: result.atrPercent, timeframeAlignment: result.timeframeAlignment, strategies: result.strategies, invalidation: result.invalidation } : {};
     const input = { reviewReason: eventContext ? "high_impact_news_released" : "material_trade_change", style: this.config.mode, trade: { id: trade.id, instrument: trade.instrument, units: trade.units, price: trade.price, stopLoss: trade.stopLoss, takeProfit: trade.takeProfit }, currentPrice, technicalSnapshot, eventContext };
-    const cacheKey = await hashInput({ model: this.config.llmModel, input: { ...input, currentPriceBucket: priceBucket(currentPrice, result?.atrPercent ?? 0.2) } });
+    const cacheKey = await hashInput({ model: this.config.llmModel, baseUrl: this.config.llmBaseUrl, input: { ...input, currentPriceBucket: priceBucket(currentPrice, result?.atrPercent ?? 0.2) } });
     const cached = this.store.cacheGet<LiveTradeReview>(cacheKey);
-    const review = cached?.value ?? (await reviewLiveTrade(this.config.llmApiKey, this.config.llmModel, input)).value;
+    const review = cached?.value ?? (await reviewLiveTrade(this.config.llmApiKey, this.config.llmModel, input, this.config.llmBaseUrl)).value;
     if (!cached) this.store.cacheSet(cacheKey, this.config.llmModel, review, 15 * 60 * 1000);
     this.store.set(`review:${trade.id}`, { at: Date.now(), price: currentPrice, atr });
     this.log({ level: review.drifted || review.decision === "close" ? "warning" : "info", event: cached ? "strategy.review_cache_hit" : "strategy.reviewed", message: `${trade.instrument}: LLM decision ${review.decision} (${review.sentiment}). ${review.explanation}`, instrument: trade.instrument, details: { tradeId: trade.id, model: this.config.llmModel, cacheHit: Boolean(cached), confidence: review.confidence, eventContext } });
@@ -313,7 +316,7 @@ class AutoTrader {
     const maxLoss = account.equity * this.config.maxDailyLossPercent / 100;
     if (Date.now() - this.lastHeartbeatAt >= this.config.heartbeatMs) {
       this.lastHeartbeatAt = Date.now();
-      this.log({ event: "worker.heartbeat", message: `Worker active: equity ${account.equity.toFixed(2)}, open trades ${trades.length}, local daily P&L ${dayPnl.toFixed(2)}.`, details: { equity: account.equity, openTrades: trades.length, dayPnl, mode: this.config.mode, model: this.config.llmModel } });
+      this.log({ event: "worker.heartbeat", message: `Worker active: equity ${account.equity.toFixed(2)}, open trades ${trades.length}, local daily P&L ${dayPnl.toFixed(2)}.`, details: { equity: account.equity, openTrades: trades.length, dayPnl, mode: this.config.mode, model: this.config.llmModel, baseUrl: this.config.llmBaseUrl } });
     }
     await this.monitorTrades(trades);
     if (dayPnl <= -maxLoss) { this.log({ level: "error", event: "entry.blocked_daily_loss", message: `New entries blocked: local daily loss limit reached (${dayPnl.toFixed(2)}).`, details: { dayPnl, maxLoss } }); return; }
@@ -329,7 +332,7 @@ class AutoTrader {
   }
 
   async run() {
-    this.log({ event: "worker.started", message: `Autonomous ${this.config.environment} worker started in ${this.config.mode} mode.`, details: { instruments: this.config.instruments, riskPercent: this.config.riskPercent, llmModel: this.config.llmModel, llmEnabled: Boolean(this.config.llmApiKey) } });
+    this.log({ event: "worker.started", message: `Autonomous ${this.config.environment} worker started in ${this.config.mode} mode.`, details: { instruments: this.config.instruments, riskPercent: this.config.riskPercent, llmModel: this.config.llmModel, llmBaseUrl: this.config.llmBaseUrl, llmEnabled: Boolean(this.config.llmApiKey) } });
     while (!this.stopping) {
       try { await this.cycle(); } catch (error) { this.log({ level: "error", event: "worker.cycle_failed", message: error instanceof Error ? error.message : "Worker cycle failed." }); }
       await new Promise((resolvePromise) => setTimeout(resolvePromise, this.config.pollMs));

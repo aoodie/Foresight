@@ -14,6 +14,7 @@ export const aiConnection = sqliteTable("ai_connection", {
   keyCiphertext: text("key_ciphertext").notNull(),
   keyIv: text("key_iv").notNull(),
   model: text("model").notNull().default("gpt-5.5"),
+  baseUrl: text("base_url").notNull().default("https://api.aoodie.xyz/v1"),
   updatedAt: text("updated_at").notNull(),
 });
 

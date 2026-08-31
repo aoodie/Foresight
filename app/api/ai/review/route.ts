@@ -20,7 +20,7 @@ export async function POST(request: Request) {
   const atrPercent = Number(technical.atrPercent);
   const moveBucket = Number.isFinite(price) && price > 0 ? Math.max(price * Math.max(0.0005, (Number.isFinite(atrPercent) ? atrPercent : 0.2) * 0.25 / 100), 0.00000001) : 0.0001;
   const eventContext = input.eventContext && typeof input.eventContext === "object" ? input.eventContext as Record<string, unknown> : null;
-  const cacheKey = await hashAiInput({ type: "live_trade_review", version: 3, model: connection.model, reviewReason: input.reviewReason, eventContext: eventContext ? { id: eventContext.id, title: eventContext.title, currency: eventContext.currency, date: eventContext.date, actual: eventContext.actual, forecast: eventContext.forecast, previous: eventContext.previous, phase: eventContext.phase } : null, trade: { id: trade.id, instrument: trade.instrument, units: trade.units, price: trade.price, stopLoss: trade.stopLoss, takeProfit: trade.takeProfit }, priceBucket: Number.isFinite(price) ? Math.round(price / moveBucket) : null, style: input.style, timeframes: input.timeframes, strategy: input.strategy, technicalSnapshot: input.technicalSnapshot });
+  const cacheKey = await hashAiInput({ type: "live_trade_review", version: 4, model: connection.model, baseUrl: connection.baseUrl, reviewReason: input.reviewReason, eventContext: eventContext ? { id: eventContext.id, title: eventContext.title, currency: eventContext.currency, date: eventContext.date, actual: eventContext.actual, forecast: eventContext.forecast, previous: eventContext.previous, phase: eventContext.phase } : null, trade: { id: trade.id, instrument: trade.instrument, units: trade.units, price: trade.price, stopLoss: trade.stopLoss, takeProfit: trade.takeProfit }, priceBucket: Number.isFinite(price) ? Math.round(price / moveBucket) : null, style: input.style, timeframes: input.timeframes, strategy: input.strategy, technicalSnapshot: input.technicalSnapshot });
   const subjectKey = `trade:${String(trade.id ?? "unknown")}`;
   try {
     const cached = await readCachedDecision<Record<string, unknown>>(cacheKey);
@@ -32,7 +32,7 @@ export async function POST(request: Request) {
     const result = await withInFlightDedup(cacheKey, async () => {
       const concurrentCache = await readCachedDecision<Record<string, unknown>>(cacheKey);
       if (concurrentCache) return concurrentCache;
-      const aiCall = await reviewLiveTrade(connection.apiKey, connection.model, body);
+      const aiCall = await reviewLiveTrade(connection.apiKey, connection.model, body, connection.baseUrl);
       return await storeDecision({ cacheKey, decisionType: "live_trade_review", subjectKey, model: connection.model, instructions: aiCall.instructions, input: aiCall.input, output: aiCall.value, validation: { valid: true, schema: "live_trade_review.v2" }, responseId: aiCall.responseId, usage: aiCall.usage, trigger: input.reviewReason === "high_impact_news_released" ? "post_news_event" : "material_trade_change", ttlMs: 15 * 60 * 1000 });
     });
     const review = result.value as Record<string, unknown>;
