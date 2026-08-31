@@ -80,3 +80,29 @@ test("swing trading uses daily context, H4 setup and H1 trigger", async () => {
   assert.equal(candleCountForGranularity("M5"), 300);
   assert.equal(candleCountForGranularity("M15"), 100);
 });
+
+test("detects clustered support and resistance zones from completed swing points", async () => {
+  const { detectSupportResistanceZones } = await vite.ssrLoadModule("/lib/market-scanner.ts");
+  const candles = Array.from({ length: 80 }, (_, index) => {
+    const centre = 1.1 + Math.sin(index * Math.PI / 4) * 0.004;
+    return { time: new Date(Date.UTC(2026, 0, 1, index)).toISOString(), open: centre, high: centre + 0.001, low: centre - 0.001, close: centre, complete: true };
+  });
+  const zones = detectSupportResistanceZones({ candles, timeframe: "H1", currentPrice: 1.1 });
+  assert.ok(zones.some((zone) => zone.kind === "support"));
+  assert.ok(zones.some((zone) => zone.kind === "resistance"));
+  assert.ok(zones.every((zone) => zone.low < zone.high));
+  assert.ok(zones.some((zone) => zone.touches >= 2));
+});
+
+test("builds all four pending order types without enabling live execution", async () => {
+  const { buildPendingOrderPlans } = await vite.ssrLoadModule("/lib/market-scanner.ts");
+  const support = { kind: "support", timeframe: "H4", low: 98, high: 99, midpoint: 98.5, touches: 3, strength: 80, distanceAtr: 1.5 };
+  const resistance = { kind: "resistance", timeframe: "H4", low: 103, high: 104, midpoint: 103.5, touches: 3, strength: 80, distanceAtr: 1.5 };
+  const longPlans = buildPendingOrderPlans({ bias: "long", price: 101, atr: 1, support, resistance, inside: null, mode: "intraday" });
+  const shortPlans = buildPendingOrderPlans({ bias: "short", price: 101, atr: 1, support, resistance, inside: null, mode: "intraday" });
+  assert.deepEqual(longPlans.map((plan) => plan.orderType), ["buy_limit", "buy_stop"]);
+  assert.deepEqual(shortPlans.map((plan) => plan.orderType), ["sell_limit", "sell_stop"]);
+  assert.ok([...longPlans, ...shortPlans].every((plan) => plan.expiry === "4 trigger candles"));
+  const blocked = buildPendingOrderPlans({ bias: "long", price: 98.5, atr: 1, support, resistance, inside: support, mode: "intraday" });
+  assert.ok(blocked.every((plan) => plan.status === "blocked"));
+});

@@ -155,6 +155,30 @@ type StrategyEvidence = {
   why: string;
   nextStep: string;
 };
+type SupportResistanceZone = {
+  kind: "support" | "resistance";
+  timeframe: string;
+  low: number;
+  high: number;
+  midpoint: number;
+  touches: number;
+  strength: number;
+  distanceAtr: number;
+};
+type PendingOrderPlan = {
+  orderType: "buy_limit" | "buy_stop" | "sell_limit" | "sell_stop";
+  setup: "pullback" | "breakout";
+  status: "watch" | "blocked";
+  entry: number;
+  stopLoss: number;
+  takeProfit: number;
+  riskReward: number;
+  zone: SupportResistanceZone;
+  rationale: string;
+  confirmation: string;
+  expiry: string;
+  warning: string | null;
+};
 type ScanResult = {
   strategyVersion: string;
   instrument: string;
@@ -173,6 +197,7 @@ type ScanResult = {
   takeProfit2: number | null;
   riskReward1: number | null;
   riskReward2: number | null;
+  technicalStructure: string;
   analysis: string;
   reasons: string[];
   invalidation: string;
@@ -185,6 +210,12 @@ type ScanResult = {
     score: number;
   }>;
   confirmations?: number;
+  supportResistance?: {
+    support: SupportResistanceZone | null;
+    resistance: SupportResistanceZone | null;
+    priceInsideZone: SupportResistanceZone | null;
+  };
+  pendingOrderPlans?: PendingOrderPlan[];
   strategies?: StrategyEvidence[];
   selectedStrategy?: StrategyEvidence;
 };
@@ -1394,7 +1425,7 @@ export default function Home() {
                       <th className="px-3 py-3 font-medium">Align</th>
                       <th className="px-3 py-3 font-medium">RSI</th>
                       <th className="px-5 py-3 font-medium">
-                        Multi-timeframe analysis
+                        Trade thesis & entry conditions
                       </th>
                     </tr>
                   </thead>
@@ -1450,14 +1481,36 @@ export default function Home() {
                           <p className="text-xs leading-5 text-[#c0d1ca]">
                             {result.analysis}
                           </p>
-                          <ul className="mt-1 space-y-0.5 text-[11px] leading-4 text-[#81978f]">
+                          <ul className="mt-2 space-y-1 text-[11px] leading-4 text-[#81978f]">
                             {result.reasons.map((reason) => (
-                              <li key={reason}>• {reason}</li>
+                              <li key={reason} className="flex gap-1.5"><span className="text-[#89f6bf]">•</span><span>{reason}</span></li>
                             ))}
                           </ul>
-                          <p className="mt-1 text-[10px] text-amber-200/70">
-                            Invalidation: {result.invalidation}
+                          <p className="mt-2 rounded-md border border-amber-200/10 bg-amber-200/[.035] px-2 py-1.5 text-[10px] leading-4 text-amber-100/75">
+                            <span className="font-medium text-amber-100">Risk / invalidation:</span> {result.invalidation}
                           </p>
+                          {result.supportResistance && (
+                            <div className="mt-2 flex flex-wrap gap-1.5 text-[9px]">
+                              <span className="rounded bg-sky-300/[.07] px-2 py-1 text-sky-100/80">
+                                Support {formatScannerPrice(result.instrument, result.supportResistance.support?.low ?? null)}–{formatScannerPrice(result.instrument, result.supportResistance.support?.high ?? null)}
+                              </span>
+                              <span className="rounded bg-rose-300/[.07] px-2 py-1 text-rose-100/80">
+                                Resistance {formatScannerPrice(result.instrument, result.supportResistance.resistance?.low ?? null)}–{formatScannerPrice(result.instrument, result.supportResistance.resistance?.high ?? null)}
+                              </span>
+                              {result.supportResistance.priceInsideZone && (
+                                <span className="rounded bg-amber-300/10 px-2 py-1 font-medium text-amber-100">CAUTION: price inside zone</span>
+                              )}
+                            </div>
+                          )}
+                          {!!result.pendingOrderPlans?.length && (
+                            <div className="mt-2 flex flex-wrap gap-1.5 text-[9px] uppercase tracking-[.06em]">
+                              {result.pendingOrderPlans.map((plan) => (
+                                <span key={plan.orderType} className={(plan.status === "blocked" ? "bg-rose-300/10 text-rose-200" : "bg-[#a4ffcf]/10 text-[#89f6bf]") + " rounded px-2 py-1"}>
+                                  {plan.orderType.replace("_", " ")} · {plan.status}
+                                </span>
+                              ))}
+                            </div>
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -2054,6 +2107,46 @@ export default function Home() {
                         tone="reward"
                       />
                     </div>
+                    {marketSetup.supportResistance && (
+                      <div className="mt-5 rounded-xl border border-white/8 bg-black/15 p-4">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <p className="text-[10px] tracking-[.12em] text-[#89f6bf]">SUPPORT & RESISTANCE MAP</p>
+                            <p className="mt-1 text-xs leading-5 text-[#8fa59b]">Zones are clustered from completed higher-timeframe swing highs and lows. They are areas of interest, not automatic entry prices.</p>
+                          </div>
+                          {marketSetup.supportResistance.priceInsideZone && (
+                            <span className="rounded-full bg-amber-300/10 px-2.5 py-1 text-[10px] font-semibold text-amber-100">NO ENTRY · PRICE INSIDE ZONE</span>
+                          )}
+                        </div>
+                        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                          {([marketSetup.supportResistance.support, marketSetup.supportResistance.resistance] as Array<SupportResistanceZone | null>).map((zone, index) => (
+                            <div key={zone ? `${zone.kind}-${zone.timeframe}-${zone.midpoint}` : `missing-${index}`} className="rounded-lg border border-white/[.07] bg-white/[.02] p-3">
+                              <p className={(zone?.kind === "support" ? "text-sky-200" : "text-rose-200") + " text-[10px] font-semibold uppercase tracking-[.1em]"}>{zone?.kind ?? (index === 0 ? "support" : "resistance")}</p>
+                              {zone ? <><p className="mt-1 font-mono text-sm text-white">{formatScannerPrice(instrument, zone.low)}–{formatScannerPrice(instrument, zone.high)}</p><p className="mt-1 text-[10px] text-[#81978f]">{zone.timeframe} · strength {zone.strength}/100 · {zone.touches} swing touch{zone.touches === 1 ? "" : "es"} · {zone.distanceAtr.toFixed(1)} ATR away</p></> : <p className="mt-1 text-xs text-[#71887f]">No reliable nearby zone detected.</p>}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {!!marketSetup.pendingOrderPlans?.length && (
+                      <div className="mt-5">
+                        <div className="flex items-end justify-between gap-3">
+                          <div><p className="text-[10px] tracking-[.12em] text-[#89f6bf]">PENDING-ORDER SCENARIOS</p><p className="mt-1 text-xs text-[#81978f]">Advisory/paper-only. Orders require the stated confirmation before activation.</p></div>
+                        </div>
+                        <div className="mt-3 grid gap-3 lg:grid-cols-2">
+                          {marketSetup.pendingOrderPlans.map((plan) => (
+                            <article key={plan.orderType} className={(plan.status === "blocked" ? "border-rose-300/15" : "border-[#a4ffcf]/15") + " rounded-xl border bg-black/15 p-4"}>
+                              <div className="flex items-center justify-between gap-3"><div><p className="text-sm font-medium uppercase text-white">{plan.orderType.replace("_", " ")}</p><p className="mt-0.5 text-[10px] uppercase tracking-[.1em] text-[#81978f]">{plan.setup} scenario</p></div><span className={(plan.status === "blocked" ? "bg-rose-300/10 text-rose-200" : "bg-[#a4ffcf]/10 text-[#89f6bf]") + " rounded-full px-2 py-1 text-[9px] font-semibold uppercase"}>{plan.status}</span></div>
+                              <div className="mt-3 grid grid-cols-3 gap-2 text-[10px]"><PlanLevel label="Entry" value={formatScannerPrice(instrument, plan.entry)} /><PlanLevel label="Stop" value={formatScannerPrice(instrument, plan.stopLoss)} tone="risk" /><PlanLevel label={`Target · ${plan.riskReward.toFixed(1)}R`} value={formatScannerPrice(instrument, plan.takeProfit)} tone="reward" /></div>
+                              <p className="mt-3 text-xs leading-5 text-[#c0d1ca]">{plan.rationale}</p>
+                              <p className="mt-2 text-[11px] leading-4 text-[#8fa59b]"><span className="text-[#89f6bf]">Confirmation:</span> {plan.confirmation}</p>
+                              <p className="mt-2 text-[10px] text-[#71887f]">Expires after {plan.expiry}; cancel if bias or zone structure changes.</p>
+                              {plan.warning && <p className="mt-2 rounded-md bg-rose-300/[.06] px-2 py-1.5 text-[10px] leading-4 text-rose-200">Blocked: {plan.warning}</p>}
+                            </article>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                     <div className="mt-5 grid gap-3 sm:grid-cols-2">
                       <div className="rounded-xl border border-white/8 bg-black/15 p-4">
                         <p className="text-[10px] tracking-[.12em] text-[#89f6bf]">

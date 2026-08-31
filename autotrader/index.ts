@@ -19,6 +19,7 @@ import { reviewLiveTrade, type LiveTradeReview } from "../lib/openai-strategy.ts
 import { defaultAiBaseUrl, normalizeAiBaseUrl } from "../lib/ai-config.ts";
 import { calculateRiskSizedUnits, hasTriggerConfirmation, pipSize, positionRiskAmount, positionSizeLockPeriod, resolveLockedPositionSize, standardLots, validateProtectedOrder, type SizeLockScope } from "../lib/trade-risk.ts";
 import { WorkerState, type WorkerEvent, type WorkerJournalRow } from "./state.ts";
+import { canAutoCloseReviewedTrade, tradeReviewSource, type TradeReviewSource } from "../lib/trade-monitoring.ts";
 
 type Config = {
   enabled: boolean;
@@ -47,6 +48,8 @@ type Config = {
   heartbeatMs: number;
   requireTriggerConfirmation: boolean;
   autoCloseOnLlmClose: boolean;
+  monitorDashboardTrades: boolean;
+  autoCloseDashboardTrades: boolean;
   closeUnprotected: boolean;
   databasePath: string;
   lockPath: string;
@@ -105,6 +108,8 @@ function loadConfig(): Config {
     heartbeatMs: Math.max(30000, numberEnv("AUTOTRADER_HEARTBEAT_MS", 60000)),
     requireTriggerConfirmation: truthy(process.env.REQUIRE_TRIGGER_CONFIRMATION, true),
     autoCloseOnLlmClose: truthy(process.env.AUTOTRADER_AUTOCLOSE_ON_LLM_CLOSE),
+    monitorDashboardTrades: truthy(process.env.AUTOTRADER_MONITOR_DASHBOARD_TRADES, true),
+    autoCloseDashboardTrades: truthy(process.env.AUTOTRADER_AUTOCLOSE_DASHBOARD_TRADES),
     closeUnprotected: truthy(process.env.AUTOTRADER_CLOSE_UNPROTECTED, true),
     databasePath,
     lockPath: resolve(process.env.AUTOTRADER_LOCK_PATH || "./data/autotrader.lock"),
@@ -232,13 +237,13 @@ class AutoTrader {
     }
   }
 
-  private async syncJournalUpdate(row: { id: string; brokerTradeId: string }, status: string, pnl: number | null, notes: string, details: { closeReason?: string | null; closePrice?: number | null; closeTransactionId?: string | null; closeTime?: string | null } = {}) {
+  private async syncJournalUpdate(row: { id?: string; brokerTradeId: string }, status: string, pnl: number | null, notes: string, details: { closeReason?: string | null; closePrice?: number | null; closeTransactionId?: string | null; closeTime?: string | null } = {}) {
     const outcomeKey = details.closeTransactionId ?? status;
-    await this.sync("journal.update", { journalId: row.id, brokerTradeId: row.brokerTradeId, status, pnl, notes, ...details }, `journal.update:${row.id}:${status}:${outcomeKey}`);
+    await this.sync("journal.update", { journalId: row.id, brokerTradeId: row.brokerTradeId, status, pnl, notes, ...details }, `journal.update:${row.id ?? row.brokerTradeId}:${status}:${outcomeKey}`);
   }
 
-  private async syncJournalActivity(row: { id: string; brokerTradeId: string }, notes: string, metadata: Record<string, unknown>) {
-    await this.sync("journal.activity", { journalId: row.id, brokerTradeId: row.brokerTradeId, status: "open", notes, metadata }, `journal.activity:${row.id}:${await hashInput(metadata)}`);
+  private async syncJournalActivity(row: { id?: string; brokerTradeId: string }, notes: string | null, metadata: Record<string, unknown>) {
+    await this.sync("journal.activity", { journalId: row.id, brokerTradeId: row.brokerTradeId, status: "open", notes, metadata }, `journal.activity:${row.id ?? row.brokerTradeId}:${await hashInput(metadata)}`);
   }
 
   private closeFillFor(fills: Awaited<ReturnType<typeof fetchOandaOrderFills>>, tradeId: string) {
@@ -308,7 +313,7 @@ class AutoTrader {
     return { ok: true as const, units: resolved.units, riskAmount, lockKey, period, created: resolved.created };
   }
 
-  private async maybeReviewTrade(trade: Awaited<ReturnType<typeof fetchOandaOpenTrades>>[number], result: ScannerResult | null, eventContext: unknown) {
+  private async maybeReviewTrade(trade: Awaited<ReturnType<typeof fetchOandaOpenTrades>>[number], result: ScannerResult | null, eventContext: unknown, source: TradeReviewSource) {
     if (!this.config.llmApiKey) return;
     const prior = this.store.get<{ at: number; price: number; atr: number }>(`review:${trade.id}`);
     const quote = await fetchOandaPrice({ token: this.config.token, environment: this.config.environment, accountId: this.config.accountId, instrument: trade.instrument });
@@ -317,21 +322,27 @@ class AutoTrader {
     const materiallyMoved = !prior || Date.now() - prior.at >= this.config.llmReviewMs || Math.abs(currentPrice - prior.price) >= atr * this.config.llmMoveAtrFraction;
     if (!materiallyMoved) return;
     const technicalSnapshot = result ? { bias: result.bias, score: result.score, rsi: result.rsi, atrPercent: result.atrPercent, timeframeAlignment: result.timeframeAlignment, strategies: result.strategies, invalidation: result.invalidation } : {};
-    const input = { reviewReason: eventContext ? "high_impact_news_released" : "material_trade_change", style: this.config.mode, trade: { id: trade.id, instrument: trade.instrument, units: trade.units, price: trade.price, stopLoss: trade.stopLoss, takeProfit: trade.takeProfit }, currentPrice, technicalSnapshot, eventContext };
+    const input = { reviewReason: eventContext ? "high_impact_news_released" : "material_trade_change", tradeSource: source, style: this.config.mode, trade: { id: trade.id, instrument: trade.instrument, units: trade.units, price: trade.price, stopLoss: trade.stopLoss, takeProfit: trade.takeProfit }, currentPrice, technicalSnapshot, eventContext };
     const cacheKey = await hashInput({ model: this.config.llmModel, baseUrl: this.config.llmBaseUrl, input: { ...input, currentPriceBucket: priceBucket(currentPrice, result?.atrPercent ?? 0.2) } });
     const cached = this.store.cacheGet<LiveTradeReview>(cacheKey);
     const review = cached?.value ?? (await reviewLiveTrade(this.config.llmApiKey, this.config.llmModel, input, this.config.llmBaseUrl)).value;
     if (!cached) this.store.cacheSet(cacheKey, this.config.llmModel, review, 15 * 60 * 1000);
     this.store.set(`review:${trade.id}`, { at: Date.now(), price: currentPrice, atr });
-    this.log({ level: review.drifted || review.decision === "close" ? "warning" : "info", event: cached ? "strategy.review_cache_hit" : "strategy.reviewed", message: `${trade.instrument}: LLM decision ${review.decision} (${review.sentiment}). ${review.explanation}`, instrument: trade.instrument, details: { tradeId: trade.id, model: this.config.llmModel, cacheHit: Boolean(cached), confidence: review.confidence, eventContext } });
-    if (review.decision === "close" && review.confidence >= 70 && this.config.autoCloseOnLlmClose) {
+    const managed = this.store.managedOpenTrades().find((row) => row.broker_trade_id === trade.id);
+    const reviewMetadata = { lastLlmReview: { reviewedAt: new Date().toISOString(), source, decision: review.decision, sentiment: review.sentiment, confidence: review.confidence, drifted: review.drifted, explanation: review.explanation, recommendedAction: review.recommendedAction, currentPrice } };
+    if (managed) this.store.journalUpdateByBrokerTradeId(trade.id, "open", null, undefined, reviewMetadata);
+    await this.syncJournalActivity({ id: managed?.id, brokerTradeId: trade.id }, null, reviewMetadata);
+    this.log({ level: review.drifted || review.decision === "close" ? "warning" : "info", event: cached ? "strategy.review_cache_hit" : "strategy.reviewed", message: `${trade.instrument}: LLM decision ${review.decision} (${review.sentiment}) for ${source === "dashboard_manual" ? "dashboard" : "autonomous"} trade. ${review.explanation}`, instrument: trade.instrument, details: { tradeId: trade.id, source, model: this.config.llmModel, cacheHit: Boolean(cached), confidence: review.confidence, eventContext } });
+    const autoCloseAllowed = canAutoCloseReviewedTrade({ source, autoCloseAutonomous: this.config.autoCloseOnLlmClose, autoCloseDashboardManual: this.config.autoCloseDashboardTrades });
+    if (review.decision === "close" && review.confidence >= 70 && autoCloseAllowed) {
       const closed = await closeOandaTrade({ token: this.config.token, environment: this.config.environment, accountId: this.config.accountId, tradeId: trade.id });
-      const managed = this.store.managedOpenTrades().find((row) => row.broker_trade_id === trade.id);
       const notes = `LLM closed: ${review.explanation}`;
       const closePrice = Number.isFinite(closed.price) ? closed.price : null;
       this.store.journalUpdateByBrokerTradeId(trade.id, "closed", closed.pnl, notes, { closeReason: "LLM close", closePrice, closeTransactionId: closed.transactionId, closeTime: closed.closeTime });
-      if (managed) await this.syncJournalUpdate({ id: managed.id, brokerTradeId: trade.id }, "closed", closed.pnl, notes, { closeReason: "LLM close", closePrice, closeTransactionId: closed.transactionId, closeTime: closed.closeTime });
-      this.log({ level: "warning", event: "trade.closed_by_policy", message: `Closed ${trade.instrument} after a high-confidence LLM close decision.`, instrument: trade.instrument, details: { tradeId: trade.id, pnl: closed.pnl } });
+      await this.syncJournalUpdate({ id: managed?.id, brokerTradeId: trade.id }, "closed", closed.pnl, notes, { closeReason: "LLM close", closePrice, closeTransactionId: closed.transactionId, closeTime: closed.closeTime });
+      this.log({ level: "warning", event: "trade.closed_by_policy", message: `Closed ${source === "dashboard_manual" ? "dashboard" : "autonomous"} ${trade.instrument} trade after a high-confidence LLM close decision.`, instrument: trade.instrument, details: { tradeId: trade.id, source, pnl: closed.pnl } });
+    } else if (review.decision === "close" && review.confidence >= 70) {
+      this.log({ level: "warning", event: "strategy.close_recommended", message: `${trade.instrument}: LLM recommends closing the ${source === "dashboard_manual" ? "dashboard" : "autonomous"} trade, but automatic close authority is disabled.`, instrument: trade.instrument, details: { tradeId: trade.id, source, confidence: review.confidence, recommendedAction: review.recommendedAction } });
     }
   }
 
@@ -355,8 +366,9 @@ class AutoTrader {
     const managedRows = this.store.managedOpenTrades();
     const managedIds = new Set(managedRows.map((row) => row.broker_trade_id));
     for (const trade of trades) {
-      if (!managedIds.has(trade.id)) continue;
-      const managed = managedRows.find((row) => row.broker_trade_id === trade.id)!;
+      const managed = managedRows.find((row) => row.broker_trade_id === trade.id) ?? null;
+      const source = tradeReviewSource({ managedByWorker: managedIds.has(trade.id), clientTag: trade.clientTag, monitorDashboardTrades: this.config.monitorDashboardTrades });
+      if (!source) continue;
       const snapshot = { units: trade.units, entryPrice: trade.price, stopLoss: trade.stopLoss, takeProfit: trade.takeProfit };
       const snapshotKey = `broker-snapshot:${trade.id}`;
       const priorSnapshot = this.store.get<typeof snapshot>(snapshotKey);
@@ -365,9 +377,9 @@ class AutoTrader {
         const notes = priorSnapshot ? `Broker activity changed: ${changedFields.join(", ")}.` : "Broker position confirmed and protection snapshot recorded.";
         const activityAt = new Date().toISOString();
         this.store.set(snapshotKey, snapshot);
-        this.store.journalUpdateByBrokerTradeId(trade.id, "open", null, notes, { brokerSnapshot: snapshot, lastBrokerActivityAt: activityAt });
-        await this.syncJournalActivity({ id: managed.id, brokerTradeId: trade.id }, notes, { brokerSnapshot: snapshot, lastBrokerActivityAt: activityAt });
-        this.log({ level: priorSnapshot ? "warning" : "info", event: priorSnapshot ? "trade.broker_activity_changed" : "trade.broker_snapshot_recorded", message: `${trade.instrument}: ${notes}`, instrument: trade.instrument, details: { tradeId: trade.id, changedFields, previous: priorSnapshot, current: snapshot } });
+        if (managed) this.store.journalUpdateByBrokerTradeId(trade.id, "open", null, notes, { brokerSnapshot: snapshot, lastBrokerActivityAt: activityAt });
+        await this.syncJournalActivity({ id: managed?.id, brokerTradeId: trade.id }, notes, { brokerSnapshot: snapshot, lastBrokerActivityAt: activityAt });
+        this.log({ level: priorSnapshot ? "warning" : "info", event: priorSnapshot ? "trade.broker_activity_changed" : "trade.broker_snapshot_recorded", message: `${trade.instrument}: ${notes}`, instrument: trade.instrument, details: { tradeId: trade.id, source, changedFields, previous: priorSnapshot, current: snapshot } });
       }
       if (!trade.stopLoss || !trade.takeProfit) {
         this.log({ level: "error", event: "trade.unprotected", message: `${trade.instrument} trade ${trade.id} has no broker-side stop and target.`, instrument: trade.instrument, details: { tradeId: trade.id } });
@@ -375,15 +387,15 @@ class AutoTrader {
           const closed = await closeOandaTrade({ token: this.config.token, environment: this.config.environment, accountId: this.config.accountId, tradeId: trade.id });
           const notes = "Safety close: broker-side stop/target was missing.";
           const closePrice = Number.isFinite(closed.price) ? closed.price : null;
-          this.store.journalUpdateByBrokerTradeId(trade.id, "closed", closed.pnl, notes, { closeReason: "Safety close", closePrice, closeTransactionId: closed.transactionId, closeTime: closed.closeTime });
-          await this.syncJournalUpdate({ id: managed.id, brokerTradeId: trade.id }, "closed", closed.pnl, notes, { closeReason: "Safety close", closePrice, closeTransactionId: closed.transactionId, closeTime: closed.closeTime });
+          if (managed) this.store.journalUpdateByBrokerTradeId(trade.id, "closed", closed.pnl, notes, { closeReason: "Safety close", closePrice, closeTransactionId: closed.transactionId, closeTime: closed.closeTime });
+          await this.syncJournalUpdate({ id: managed?.id, brokerTradeId: trade.id }, "closed", closed.pnl, notes, { closeReason: "Safety close", closePrice, closeTransactionId: closed.transactionId, closeTime: closed.closeTime });
         }
         continue;
       }
       const eventStatus = await this.news(trade.instrument);
       const released = eventStatus.events.find((event) => event.phase === "after" && event.minutesSince <= 1);
       const result = await this.reviewAnalysis(trade.instrument);
-      await this.maybeReviewTrade(trade, result, released ?? null);
+      await this.maybeReviewTrade(trade, result, released ?? null, source);
     }
     const currentIds = new Set(trades.map((trade) => trade.id));
     const missingManaged = managedRows.filter((row) => !currentIds.has(row.broker_trade_id));
@@ -524,7 +536,7 @@ class AutoTrader {
 
   async run() {
     await this.queueExistingJournals();
-    this.log({ event: "worker.started", message: `Autonomous ${this.config.environment} worker started in ${this.config.mode} mode with ${this.config.sizeLockScope} position-size locking.`, details: { instruments: this.config.instruments, riskPercent: this.config.riskPercent, sizeLockScope: this.config.sizeLockScope, llmModel: this.config.llmModel, llmBaseUrl: this.config.llmBaseUrl, llmEnabled: Boolean(this.config.llmApiKey) } });
+    this.log({ event: "worker.started", message: `Autonomous ${this.config.environment} worker started in ${this.config.mode} mode with ${this.config.sizeLockScope} position-size locking and dashboard-trade monitoring ${this.config.monitorDashboardTrades ? "enabled" : "disabled"}.`, details: { instruments: this.config.instruments, riskPercent: this.config.riskPercent, sizeLockScope: this.config.sizeLockScope, monitorDashboardTrades: this.config.monitorDashboardTrades, autoCloseDashboardTrades: this.config.autoCloseDashboardTrades, llmModel: this.config.llmModel, llmBaseUrl: this.config.llmBaseUrl, llmEnabled: Boolean(this.config.llmApiKey) } });
     while (!this.stopping) {
       try { await this.cycle(); } catch (error) { this.log({ level: "error", event: "worker.cycle_failed", message: error instanceof Error ? error.message : "Worker cycle failed." }); }
       await new Promise((resolvePromise) => setTimeout(resolvePromise, this.config.pollMs));

@@ -1,11 +1,26 @@
 "use client";
 
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type Candle = { time: string; open: number; high: number; low: number; close: number; complete: boolean };
 type ChartMarker = { time: string; price: number; kind: "entry" | "close"; label: string; color: string };
 type SeriesApi = { setData(data: Array<Record<string, number>>): void; setMarkers(markers: Array<Record<string, unknown>>): void; createPriceLine(options: Record<string, unknown>): void };
-type ChartApi = { addCandlestickSeries(options: Record<string, unknown>): SeriesApi; applyOptions(options: Record<string, unknown>): void; timeScale(): { fitContent(): void }; remove(): void };
+type VisibleRange = { from: number; to: number };
+type TimeScaleApi = {
+  fitContent(): void;
+  getVisibleRange(): VisibleRange | null;
+  setVisibleRange(range: VisibleRange): void;
+  subscribeVisibleTimeRangeChange(handler: (range: VisibleRange | null) => void): void;
+  unsubscribeVisibleTimeRangeChange(handler: (range: VisibleRange | null) => void): void;
+};
+type ChartApi = {
+  addCandlestickSeries(options: Record<string, unknown>): SeriesApi;
+  applyOptions(options: Record<string, unknown>): void;
+  timeScale(): TimeScaleApi;
+  subscribeCrosshairMove(handler: (param: { time?: number }) => void): void;
+  unsubscribeCrosshairMove(handler: (param: { time?: number }) => void): void;
+  remove(): void;
+};
 type TradingViewLibrary = { createChart(container: HTMLElement, options: Record<string, unknown>): ChartApi };
 
 declare global { interface Window { LightweightCharts?: TradingViewLibrary } }
@@ -42,6 +57,17 @@ function decimalsFor(instrument: string) {
   return 5;
 }
 
+function viewportKey(instrument: string, granularity: string) {
+  return `foresight:chart-viewport:${instrument}:${granularity}`;
+}
+
+function formatChartTime(unix?: number) {
+  if (!unix) return "Move cursor over a candle";
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC",
+  }).format(new Date(unix * 1000)) + " UTC";
+}
+
 export function TradingViewChart({ instrument, granularity, candles, levels, markers, tradeSummary }: {
   instrument: string;
   granularity: string;
@@ -51,6 +77,7 @@ export function TradingViewChart({ instrument, granularity, candles, levels, mar
   tradeSummary?: { status: string; closeReason?: string | null; closeNotes?: string | null };
 }) {
   const container = useRef<HTMLDivElement>(null);
+  const [cursorTime, setCursorTime] = useState<number>();
   const decimals = decimalsFor(instrument);
   const chartLevels = useMemo(() => [
     { price: levels?.entry ?? NaN, color: "#a4ffcf", title: "ENTRY" },
@@ -93,10 +120,43 @@ export function TradingViewChart({ instrument, granularity, candles, levels, mar
         color: marker.color, shape: marker.kind === "entry" ? (marker.label === "SHORT ENTRY" ? "arrowDown" : "arrowUp") : "circle", text: marker.label,
       })));
       chartLevels.forEach((line) => series.createPriceLine({ price: line.price, color: line.color, lineWidth: 2, lineStyle: 0, axisLabelVisible: true, title: line.title }));
-      chart.timeScale().fitContent();
+      const timeScale = chart.timeScale();
+      const savedViewport = window.localStorage.getItem(viewportKey(instrument, granularity));
+      let restoredViewport = false;
+      if (savedViewport) {
+        try {
+          const parsed = JSON.parse(savedViewport) as VisibleRange;
+          if (Number.isFinite(parsed.from) && Number.isFinite(parsed.to) && parsed.from < parsed.to) {
+            timeScale.setVisibleRange(parsed);
+            restoredViewport = true;
+          }
+        } catch { window.localStorage.removeItem(viewportKey(instrument, granularity)); }
+      }
+      if (!restoredViewport) timeScale.fitContent();
+      const saveViewport = (range: VisibleRange | null) => {
+        if (range && Number.isFinite(range.from) && Number.isFinite(range.to)) {
+          window.localStorage.setItem(viewportKey(instrument, granularity), JSON.stringify(range));
+        }
+      };
+      // Lightweight Charts does not always emit its range callback until the
+      // gesture has fully settled. Save directly at the end of every pan/zoom
+      // as well, and once more before a live-data re-render removes the chart.
+      const persistViewport = () => saveViewport(timeScale.getVisibleRange());
+      const updateCursorTime = (param: { time?: number }) => setCursorTime(param.time);
+      timeScale.subscribeVisibleTimeRangeChange(saveViewport);
+      chart.subscribeCrosshairMove(updateCursorTime);
+      host.addEventListener("pointerup", persistViewport);
+      host.addEventListener("touchend", persistViewport);
       const resize = new ResizeObserver(() => chart?.applyOptions({ width: host.clientWidth }));
       resize.observe(host);
-      (host as HTMLDivElement & { __foresightResize?: ResizeObserver }).__foresightResize = resize;
+      (host as HTMLDivElement & { __foresightResize?: ResizeObserver; __foresightCleanup?: () => void }).__foresightResize = resize;
+      (host as HTMLDivElement & { __foresightCleanup?: () => void }).__foresightCleanup = () => {
+        persistViewport();
+        host.removeEventListener("pointerup", persistViewport);
+        host.removeEventListener("touchend", persistViewport);
+        timeScale.unsubscribeVisibleTimeRangeChange(saveViewport);
+        chart?.unsubscribeCrosshairMove(updateCursorTime);
+      };
     }).catch(() => {
       if (!cancelled && host) host.innerHTML = "<div class=\"grid h-full place-items-center text-sm text-[#71887f]\">TradingView chart could not load. Refresh to try again.</div>";
     });
@@ -104,6 +164,7 @@ export function TradingViewChart({ instrument, granularity, candles, levels, mar
       cancelled = true;
       const resize = (host as HTMLDivElement & { __foresightResize?: ResizeObserver }).__foresightResize;
       resize?.disconnect();
+      (host as HTMLDivElement & { __foresightCleanup?: () => void }).__foresightCleanup?.();
       chart?.remove();
       host.replaceChildren();
     };
@@ -120,6 +181,9 @@ export function TradingViewChart({ instrument, granularity, candles, levels, mar
         {tradeSummary && <span className="rounded bg-white/5 px-2 py-1 text-[#d9e8e1]">{tradeSummary.status}</span>}
         <span className="ml-auto text-[#71887f]">Live levels · TradingView Lightweight Charts</span>
       </div>}
+      <div className="flex items-center justify-between border-b border-white/[.06] bg-white/[.015] px-3 py-1.5 text-[10px] text-[#8fa59b]">
+        <span>Chart time</span><span className="font-mono text-[#c7d2cc]">{formatChartTime(cursorTime)}</span>
+      </div>
       {tradeSummary?.closeReason && <div className="border-b border-white/10 bg-white/[.025] px-3 py-2 text-[11px] text-[#c7d2cc]">Close reason: <strong className="text-white">{tradeSummary.closeReason}</strong>{tradeSummary.closeNotes ? <span className="ml-2 text-[#8fa59b]">{tradeSummary.closeNotes}</span> : null}</div>}
       <div ref={container} className="h-[560px] w-full" />
       {!candles?.length && <div className="grid h-[560px] place-items-center text-sm text-[#71887f]">Connect OANDA to load the chart.</div>}

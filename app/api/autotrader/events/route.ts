@@ -57,10 +57,12 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true, id });
   }
   if (body.type === "journal.activity") {
-    if (typeof payload.journalId !== "string" || typeof payload.brokerTradeId !== "string" || !payload.metadata || typeof payload.metadata !== "object") {
-      return NextResponse.json({ error: "Journal activity is missing its journal ID, broker trade ID or metadata." }, { status: 400 });
+    if (typeof payload.brokerTradeId !== "string" || !payload.metadata || typeof payload.metadata !== "object") {
+      return NextResponse.json({ error: "Journal activity is missing its broker trade ID or metadata." }, { status: 400 });
     }
-    const matched = await updateJournalEntry({ id: payload.journalId, status: "open", brokerTradeId: payload.brokerTradeId, notes: stringOrNull(payload.notes), metadata: payload.metadata as Record<string, unknown> });
+    const matched = typeof payload.journalId === "string"
+      ? await updateJournalEntry({ id: payload.journalId, status: "open", brokerTradeId: payload.brokerTradeId, notes: stringOrNull(payload.notes), metadata: payload.metadata as Record<string, unknown> })
+      : await updateJournalByBrokerTradeId({ brokerTradeId: payload.brokerTradeId, status: "open", notes: stringOrNull(payload.notes), metadata: payload.metadata as Record<string, unknown> });
     if (!matched) return NextResponse.json({ error: "The journal record for this broker activity was not found." }, { status: 404 });
     return NextResponse.json({ ok: true });
   }

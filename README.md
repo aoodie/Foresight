@@ -58,6 +58,16 @@ a released high-impact event. Broker-side stop loss and take profit remain the
 primary protection. Set `LLM_BASE_URL=https://api.aoodie.xyz/v1` and choose the
 provider model with `LLM_MODEL`.
 
+Trades opened through the dashboard are tagged `foresight-manual` and are
+continuously reviewed by the VPS worker when
+`AUTOTRADER_MONITOR_DASHBOARD_TRADES=true` (the default). Their LLM decisions,
+confidence, explanation, and recommended action are synced to the journal.
+Unrelated OANDA trades are ignored. A close recommendation is advisory unless
+both `AUTOTRADER_AUTOCLOSE_ON_LLM_CLOSE=true` and
+`AUTOTRADER_AUTOCLOSE_DASHBOARD_TRADES=true` are explicitly enabled; this
+separate permission prevents dashboard trades from gaining execution authority
+silently.
+
 ### Run with systemd
 
 Install Node.js 24, run `npm ci`, copy the example environment file to
