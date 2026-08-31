@@ -10,7 +10,7 @@ async function ownerRequest() { return Boolean((await headers()).get("oai-authen
 export async function POST(request: Request) {
   if (!(await ownerRequest())) return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
   const connection = await getAiKey();
-  if (!connection) return NextResponse.json({ error: "Add an OpenAI API key in Settings before monitoring a trade." }, { status: 503 });
+  if (!connection) return NextResponse.json({ error: "Connect your LLM provider in Settings before monitoring a trade." }, { status: 503 });
   const body = await request.json().catch(() => null);
   if (!body || typeof body !== "object") return NextResponse.json({ error: "Trade review data is missing." }, { status: 400 });
   const input = body as Record<string, unknown>;
@@ -26,7 +26,7 @@ export async function POST(request: Request) {
     const cached = await readCachedDecision<Record<string, unknown>>(cacheKey);
     if (cached) {
       const review = cached.value;
-      await writeSystemLog({ level: review.drifted || review.decision === "close" ? "warning" : "info", category: "monitor", event: "strategy.review_cache_hit", message: "Reused the captured trade review; no OpenAI request was made.", instrument: typeof trade.instrument === "string" ? trade.instrument : null, details: { decisionId: cached.decisionId, fetchedAt: cached.fetchedAt, decision: review.decision, sentiment: review.sentiment, confidence: review.confidence } });
+      await writeSystemLog({ level: review.drifted || review.decision === "close" ? "warning" : "info", category: "monitor", event: "strategy.review_cache_hit", message: "Reused the captured trade review; no LLM request was made.", instrument: typeof trade.instrument === "string" ? trade.instrument : null, details: { decisionId: cached.decisionId, fetchedAt: cached.fetchedAt, decision: review.decision, sentiment: review.sentiment, confidence: review.confidence, baseUrl: connection.baseUrl } });
       return NextResponse.json({ ...review, reviewedAt: cached.fetchedAt, lastFetchedAt: cached.fetchedAt, model: cached.model, cacheHit: true, decisionId: cached.decisionId, usage: cached.usage });
     }
     const result = await withInFlightDedup(cacheKey, async () => {
@@ -36,7 +36,7 @@ export async function POST(request: Request) {
       return await storeDecision({ cacheKey, decisionType: "live_trade_review", subjectKey, model: connection.model, instructions: aiCall.instructions, input: aiCall.input, output: aiCall.value, validation: { valid: true, schema: "live_trade_review.v2" }, responseId: aiCall.responseId, usage: aiCall.usage, trigger: input.reviewReason === "high_impact_news_released" ? "post_news_event" : "material_trade_change", ttlMs: 15 * 60 * 1000 });
     });
     const review = result.value as Record<string, unknown>;
-    await writeSystemLog({ level: review.drifted || review.decision === "close" ? "warning" : "info", category: "monitor", event: result.cacheHit ? "strategy.review_cache_hit" : (review.drifted ? "strategy.drift_detected" : "strategy.reviewed"), message: result.cacheHit ? "Reused a captured trade review; no additional OpenAI request was made." : String(review.explanation ?? "Trade reviewed."), instrument: typeof trade.instrument === "string" ? trade.instrument : null, details: { decisionId: result.decisionId, cacheHit: result.cacheHit, decision: review.decision, sentiment: review.sentiment, confidence: review.confidence, usage: result.usage } });
+    await writeSystemLog({ level: review.drifted || review.decision === "close" ? "warning" : "info", category: "monitor", event: result.cacheHit ? "strategy.review_cache_hit" : (review.drifted ? "strategy.drift_detected" : "strategy.reviewed"), message: result.cacheHit ? "Reused a captured trade review; no additional LLM request was made." : String(review.explanation ?? "Trade reviewed."), instrument: typeof trade.instrument === "string" ? trade.instrument : null, details: { decisionId: result.decisionId, cacheHit: result.cacheHit, decision: review.decision, sentiment: review.sentiment, confidence: review.confidence, usage: result.usage, baseUrl: connection.baseUrl } });
     return NextResponse.json({ ...review, reviewedAt: result.fetchedAt, lastFetchedAt: result.fetchedAt, model: result.model, cacheHit: result.cacheHit, decisionId: result.decisionId, usage: result.usage });
   } catch (error) {
     try { await writeSystemLog({ level: "error", category: "monitor", event: "strategy.review_failed", message: error instanceof Error ? error.message : "Trade review failed." }); } catch { /* Preserve the original review error. */ }

@@ -13,7 +13,7 @@ export const aiConnection = sqliteTable("ai_connection", {
   id: text("id").primaryKey(),
   keyCiphertext: text("key_ciphertext").notNull(),
   keyIv: text("key_iv").notNull(),
-  model: text("model").notNull().default("gpt-5.5"),
+  model: text("model").notNull().default(""),
   baseUrl: text("base_url").notNull().default("https://api.aoodie.xyz/v1"),
   updatedAt: text("updated_at").notNull(),
 });
@@ -63,7 +63,7 @@ export const systemLogs = sqliteTable("system_logs", {
   detailsJson: text("details_json"),
 });
 
-// Append-only record of every actual OpenAI decision. Cache hits point back to
+// Append-only record of every actual custom-LLM decision. Cache hits point back to
 // one of these records so the original prompt, evidence and output remain
 // auditable without charging for a second generation.
 export const aiDecisionLedger = sqliteTable("ai_decision_ledger", {
@@ -71,7 +71,7 @@ export const aiDecisionLedger = sqliteTable("ai_decision_ledger", {
   cacheKey: text("cache_key").notNull(),
   decisionType: text("decision_type").notNull(),
   subjectKey: text("subject_key").notNull(),
-  provider: text("provider").notNull().default("openai"),
+  provider: text("provider").notNull().default("custom_llm"),
   model: text("model").notNull(),
   instructions: text("instructions").notNull(),
   inputJson: text("input_json").notNull(),

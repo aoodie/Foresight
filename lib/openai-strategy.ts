@@ -91,7 +91,7 @@ export async function generateStrategies(apiKey: string, model: string, markets:
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify({
-      model,
+      ...(model.trim() ? { model: model.trim() } : {}),
       instructions: strategyInstructions,
       input: JSON.stringify(input),
       text: { format: { type: "json_schema", name: "daily_trade_strategies", strict: true, schema: outputSchema } },
@@ -134,7 +134,7 @@ export async function reviewLiveTrade(apiKey: string, model: string, input: unkn
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify({
-      model,
+      ...(model.trim() ? { model: model.trim() } : {}),
       instructions: reviewInstructions,
       input: JSON.stringify(input),
       text: { format: { type: "json_schema", name: "live_trade_review", strict: true, schema: reviewSchema } },

@@ -12,7 +12,7 @@ async function encryptionKey() {
   return crypto.subtle.importKey("raw", decode(secret), "AES-GCM", false, ["encrypt", "decrypt"]);
 }
 
-export async function saveAiKey(apiKey: string, model = "gpt-5.5", baseUrl = defaultAiBaseUrl) {
+export async function saveAiKey(apiKey: string, model = "", baseUrl = defaultAiBaseUrl) {
   const normalizedBaseUrl = normalizeAiBaseUrl(baseUrl);
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const encrypted = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, await encryptionKey(), new TextEncoder().encode(apiKey));
@@ -25,5 +25,5 @@ export async function getAiKey() {
     .bind("primary").first<{ key_ciphertext: string; key_iv: string; model: string; base_url: string | null; updated_at: string }>();
   if (!row) return null;
   const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv: decode(row.key_iv) }, await encryptionKey(), decode(row.key_ciphertext));
-  return { apiKey: new TextDecoder().decode(decrypted), model: row.model, baseUrl: normalizeAiBaseUrl(row.base_url ?? defaultAiBaseUrl), updatedAt: row.updated_at };
+  return { apiKey: new TextDecoder().decode(decrypted), model: row.model?.trim() ?? "", baseUrl: normalizeAiBaseUrl(row.base_url ?? defaultAiBaseUrl), updatedAt: row.updated_at };
 }
