@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { fetchOandaOpenTrades, OandaApiError } from "@/lib/oanda-api";
+import { fetchOandaOpenTrades, fetchOandaOrderFills, OandaApiError } from "@/lib/oanda-api";
 import { getOandaToken } from "@/lib/oanda-secret";
 
 export async function GET() {
@@ -13,7 +13,13 @@ export async function GET() {
       environment: connection.environment,
       accountId: connection.accountId,
     });
-    return NextResponse.json({ connected: true, environment: connection.environment, trades, checkedAt: new Date().toISOString() });
+    const fills = await fetchOandaOrderFills({
+      token: connection.token,
+      environment: connection.environment,
+      accountId: connection.accountId,
+      from: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
+    });
+    return NextResponse.json({ connected: true, environment: connection.environment, trades, fills, checkedAt: new Date().toISOString() });
   } catch (error) {
     const status = error instanceof OandaApiError ? error.status : 500;
     return NextResponse.json({ connected: false, error: error instanceof Error ? error.message : "Unable to monitor OANDA trades." }, { status });

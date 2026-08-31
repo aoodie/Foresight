@@ -139,9 +139,15 @@ export class WorkerState {
       .run(input.id, now, now, input.brokerTradeId ?? null, input.environment, input.accountId, input.instrument, input.direction, input.style, input.strategyName, input.entryPrice, input.stopLoss, input.takeProfit1, input.takeProfit2, input.units, input.riskPercent, input.riskAmount, input.status, input.metadata == null ? null : JSON.stringify(input.metadata));
   }
 
-  journalUpdateByBrokerTradeId(brokerTradeId: string, status: string, pnl?: number | null, notes?: string) {
-    this.db.prepare("UPDATE worker_journal SET status = ?, pnl = COALESCE(?, pnl), closed_at = CASE WHEN ? IN ('closed', 'cancelled') THEN ? ELSE closed_at END, updated_at = ?, metadata_json = CASE WHEN ? IS NULL THEN metadata_json ELSE json_set(COALESCE(metadata_json, '{}'), '$.lastNote', ?) END WHERE broker_trade_id = ?")
-      .run(status, pnl ?? null, status, new Date().toISOString(), new Date().toISOString(), notes ?? null, notes ?? null, brokerTradeId);
+  journalUpdateByBrokerTradeId(brokerTradeId: string, status: string, pnl?: number | null, notes?: string, metadata?: Record<string, unknown>) {
+    const existing = this.db.prepare("SELECT metadata_json FROM worker_journal WHERE broker_trade_id = ?").get(brokerTradeId) as { metadata_json?: string | null } | undefined;
+    let mergedMetadata: Record<string, unknown> = {};
+    try { mergedMetadata = existing?.metadata_json ? JSON.parse(existing.metadata_json) : {}; } catch { /* Replace malformed metadata with the new audit fields. */ }
+    if (notes) mergedMetadata.lastNote = notes;
+    if (metadata) Object.assign(mergedMetadata, metadata);
+    const now = new Date().toISOString();
+    this.db.prepare("UPDATE worker_journal SET status = ?, pnl = COALESCE(?, pnl), closed_at = CASE WHEN ? IN ('closed', 'cancelled') THEN ? ELSE closed_at END, updated_at = ?, metadata_json = ? WHERE broker_trade_id = ?")
+      .run(status, pnl ?? null, status, now, now, JSON.stringify(mergedMetadata), brokerTradeId);
   }
 
   managedOpenTrades(): Array<{ id: string; broker_trade_id: string; instrument: string; status: string }> {

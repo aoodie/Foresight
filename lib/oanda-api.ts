@@ -103,9 +103,9 @@ export async function closeOandaTrade(args: { token: string; environment: OandaE
       cache: "no-store",
     });
   } catch { throw new OandaApiError("OANDA could not be reached. Try again shortly.", 502); }
-  const payload = (await response.json().catch(() => ({}))) as { orderFillTransaction?: { id?: string; pl?: string }; errorMessage?: string };
+  const payload = (await response.json().catch(() => ({}))) as { orderFillTransaction?: { id?: string; pl?: string; price?: string; reason?: string }; errorMessage?: string };
   if (!response.ok) throw new OandaApiError(payload.errorMessage || `OANDA could not close trade (${response.status}).`, response.status);
-  return { transactionId: payload.orderFillTransaction?.id ?? null, pnl: Number(payload.orderFillTransaction?.pl ?? 0) };
+  return { transactionId: payload.orderFillTransaction?.id ?? null, pnl: Number(payload.orderFillTransaction?.pl ?? 0), price: Number(payload.orderFillTransaction?.price ?? NaN), reason: payload.orderFillTransaction?.reason ?? null };
 }
 
 export async function fetchOandaAccountId(token: string, environment: OandaEnvironment) {
@@ -212,11 +212,27 @@ type OandaTransactionPayload = {
     time?: string;
     instrument?: string;
     tradeID?: string;
+    orderID?: string;
     pl?: string;
     units?: string;
+    price?: string;
+    reason?: string;
+    tradeOpened?: { tradeID?: string };
+    tradeReduced?: { tradeID?: string; realizedPL?: string };
+    tradeClosed?: { tradeID?: string; realizedPL?: string };
+    tradesClosed?: Array<{ tradeID?: string; realizedPL?: string }>;
   }>;
   errorMessage?: string;
 };
+
+function closeReasonFor(reason: string | null) {
+  if (reason === "TAKE_PROFIT_ORDER") return "TP hit";
+  if (reason === "STOP_LOSS_ORDER") return "SL hit";
+  if (reason === "TRAILING_STOP_LOSS_ORDER") return "Trailing stop hit";
+  if (reason === "MARKET_ORDER_TRADE_CLOSE" || reason === "CLIENT_REQUEST") return "Manual close";
+  if (reason === "LINKED_TRADE_CLOSED") return "Linked order close";
+  return reason ? reason.replaceAll("_", " ").toLowerCase() : "Closed order";
+}
 
 export async function fetchOandaOrderFills(args: {
   token: string;
@@ -238,13 +254,30 @@ export async function fetchOandaOrderFills(args: {
   return (payload.transactions ?? []).flatMap((transaction) => {
     const pnl = Number(transaction.pl ?? 0);
     if (!transaction.id || !transaction.time || !Number.isFinite(pnl)) return [];
+    const tradeIds = [...new Set([
+      transaction.tradeID,
+      transaction.tradeOpened?.tradeID,
+      transaction.tradeReduced?.tradeID,
+      transaction.tradeClosed?.tradeID,
+      ...(transaction.tradesClosed ?? []).map((trade) => trade.tradeID),
+    ].filter((value): value is string => Boolean(value)))];
+    const isEntry = Boolean(transaction.tradeOpened?.tradeID);
+    const isClose = Boolean(transaction.tradeReduced?.tradeID || transaction.tradeClosed?.tradeID || transaction.tradesClosed?.length);
+    const reason = transaction.reason ?? null;
+    const price = Number(transaction.price);
     return [{
       id: transaction.id,
       time: transaction.time,
       instrument: transaction.instrument ?? null,
-      tradeId: transaction.tradeID ?? null,
+      tradeId: tradeIds[0] ?? null,
+      tradeIds,
       pnl,
       units: Number(transaction.units ?? 0),
+      price: Number.isFinite(price) ? price : null,
+      reason,
+      closeReason: isClose ? closeReasonFor(reason) : null,
+      isEntry,
+      isClose,
     }];
   });
 }

@@ -51,19 +51,21 @@ export async function createJournalEntry(input: JournalRecordInput) {
   return id;
 }
 
-export async function updateJournalEntry(input: { id: string; status?: string; pnl?: number | null; brokerTradeId?: string | null; notes?: string | null; closedAt?: string | null; }) {
+export async function updateJournalEntry(input: { id: string; status?: string; pnl?: number | null; brokerTradeId?: string | null; notes?: string | null; closedAt?: string | null; metadata?: Record<string, unknown>; }) {
   const now = new Date().toISOString();
   const closedAt = input.closedAt ?? (input.status && ["closed", "cancelled", "win", "loss", "breakeven"].includes(input.status) ? now : null);
-  const result = await runtime.DB.prepare("UPDATE trade_journal SET status = COALESCE(?, status), pnl = COALESCE(?, pnl), broker_trade_id = COALESCE(?, broker_trade_id), notes = COALESCE(?, notes), closed_at = COALESCE(?, closed_at), updated_at = ? WHERE id = ?")
-    .bind(input.status ?? null, input.pnl ?? null, input.brokerTradeId ?? null, input.notes ?? null, closedAt, now, input.id).run();
+  const metadataJson = input.metadata == null ? null : json(input.metadata);
+  const result = await runtime.DB.prepare("UPDATE trade_journal SET status = COALESCE(?, status), pnl = COALESCE(?, pnl), broker_trade_id = COALESCE(?, broker_trade_id), notes = COALESCE(?, notes), closed_at = COALESCE(?, closed_at), metadata_json = CASE WHEN ? IS NULL THEN metadata_json ELSE json_patch(CASE WHEN json_valid(metadata_json) THEN metadata_json ELSE '{}' END, ?) END, updated_at = ? WHERE id = ?")
+    .bind(input.status ?? null, input.pnl ?? null, input.brokerTradeId ?? null, input.notes ?? null, closedAt, metadataJson, metadataJson, now, input.id).run();
   return Number(result.meta?.changes ?? 0);
 }
 
-export async function updateJournalByBrokerTradeId(input: { brokerTradeId: string; status: string; pnl?: number | null; notes?: string | null }) {
+export async function updateJournalByBrokerTradeId(input: { brokerTradeId: string; status: string; pnl?: number | null; notes?: string | null; metadata?: Record<string, unknown> }) {
   const now = new Date().toISOString();
   const closedAt = ["closed", "cancelled", "win", "loss", "breakeven"].includes(input.status) ? now : null;
-  const result = await runtime.DB.prepare("UPDATE trade_journal SET status = ?, pnl = COALESCE(?, pnl), notes = COALESCE(?, notes), closed_at = COALESCE(?, closed_at), updated_at = ? WHERE broker_trade_id = ?")
-    .bind(input.status, input.pnl ?? null, input.notes ?? null, closedAt, now, input.brokerTradeId).run();
+  const metadataJson = input.metadata == null ? null : json(input.metadata);
+  const result = await runtime.DB.prepare("UPDATE trade_journal SET status = ?, pnl = COALESCE(?, pnl), notes = COALESCE(?, notes), closed_at = COALESCE(?, closed_at), metadata_json = CASE WHEN ? IS NULL THEN metadata_json ELSE json_patch(CASE WHEN json_valid(metadata_json) THEN metadata_json ELSE '{}' END, ?) END, updated_at = ? WHERE broker_trade_id = ?")
+    .bind(input.status, input.pnl ?? null, input.notes ?? null, closedAt, metadataJson, metadataJson, now, input.brokerTradeId).run();
   return Number(result.meta?.changes ?? 0);
 }
 

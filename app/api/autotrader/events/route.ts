@@ -14,6 +14,13 @@ function sameSecret(left: string, right: string) {
 
 function stringOrNull(value: unknown) { return typeof value === "string" && value.length <= 4000 ? value : null; }
 function numberOrNull(value: unknown) { return typeof value === "number" && Number.isFinite(value) ? value : null; }
+function closeMetadata(payload: Record<string, unknown>) {
+  const metadata: Record<string, unknown> = {};
+  if (typeof payload.closeReason === "string") metadata.closeReason = payload.closeReason;
+  if (typeof payload.closePrice === "number" && Number.isFinite(payload.closePrice)) metadata.closePrice = payload.closePrice;
+  if (typeof payload.closeTransactionId === "string") metadata.closeTransactionId = payload.closeTransactionId;
+  return Object.keys(metadata).length ? metadata : undefined;
+}
 
 export async function POST(request: Request) {
   const configuredSecret = runtime.AUTOTRADER_WEBHOOK_SECRET;
@@ -46,10 +53,10 @@ export async function POST(request: Request) {
   if (body.type === "journal.update") {
     if (typeof payload.brokerTradeId !== "string" || typeof payload.status !== "string") return NextResponse.json({ error: "Journal update is missing brokerTradeId or status." }, { status: 400 });
     if (typeof payload.journalId === "string") {
-      const matched = await updateJournalEntry({ id: payload.journalId, status: payload.status, pnl: numberOrNull(payload.pnl), brokerTradeId: payload.brokerTradeId, notes: stringOrNull(payload.notes) });
-      if (!matched) await updateJournalByBrokerTradeId({ brokerTradeId: payload.brokerTradeId, status: payload.status, pnl: numberOrNull(payload.pnl), notes: stringOrNull(payload.notes) });
+      const matched = await updateJournalEntry({ id: payload.journalId, status: payload.status, pnl: numberOrNull(payload.pnl), brokerTradeId: payload.brokerTradeId, notes: stringOrNull(payload.notes), metadata: closeMetadata(payload) });
+      if (!matched) await updateJournalByBrokerTradeId({ brokerTradeId: payload.brokerTradeId, status: payload.status, pnl: numberOrNull(payload.pnl), notes: stringOrNull(payload.notes), metadata: closeMetadata(payload) });
     } else {
-      await updateJournalByBrokerTradeId({ brokerTradeId: payload.brokerTradeId, status: payload.status, pnl: numberOrNull(payload.pnl), notes: stringOrNull(payload.notes) });
+      await updateJournalByBrokerTradeId({ brokerTradeId: payload.brokerTradeId, status: payload.status, pnl: numberOrNull(payload.pnl), notes: stringOrNull(payload.notes), metadata: closeMetadata(payload) });
     }
     return NextResponse.json({ ok: true });
   }

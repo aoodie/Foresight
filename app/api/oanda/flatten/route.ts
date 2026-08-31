@@ -22,7 +22,7 @@ export async function POST(request: Request) {
     for (const trade of selected) {
       try {
         const closed = await closeOandaTrade({ token: connection.token, environment: accountEnvironment, accountId: connection.accountId, tradeId: trade.id });
-        await updateJournalByBrokerTradeId({ brokerTradeId: trade.id, status: "closed", pnl: closed.pnl, notes: "Flattened from Foresight FX." });
+        await updateJournalByBrokerTradeId({ brokerTradeId: trade.id, status: "closed", pnl: closed.pnl, notes: "Manual close from Foresight FX.", metadata: { closeReason: "Manual close", closePrice: Number.isFinite(closed.price) ? closed.price : null, closeTransactionId: closed.transactionId } });
         results.push({ id: trade.id, instrument: trade.instrument, status: "closed", pnl: closed.pnl });
       } catch (error) {
         results.push({ id: trade.id, instrument: trade.instrument, status: "failed", error: error instanceof Error ? error.message : "Unable to close trade." });

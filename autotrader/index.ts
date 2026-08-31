@@ -212,8 +212,12 @@ class AutoTrader {
     }
   }
 
-  private async syncJournalUpdate(row: { id: string; brokerTradeId: string }, status: string, pnl: number, notes: string) {
-    await this.sync("journal.update", { journalId: row.id, brokerTradeId: row.brokerTradeId, status, pnl, notes }, `journal.update:${row.id}:${status}`);
+  private async syncJournalUpdate(row: { id: string; brokerTradeId: string }, status: string, pnl: number, notes: string, details: { closeReason?: string | null; closePrice?: number | null; closeTransactionId?: string | null } = {}) {
+    await this.sync("journal.update", { journalId: row.id, brokerTradeId: row.brokerTradeId, status, pnl, notes, ...details }, `journal.update:${row.id}:${status}`);
+  }
+
+  private closeFillFor(fills: Awaited<ReturnType<typeof fetchOandaOrderFills>>, tradeId: string) {
+    return [...fills].reverse().find((fill) => fill.isClose && fill.tradeIds.includes(tradeId)) ?? null;
   }
 
   private log(input: WorkerEvent) {
@@ -281,8 +285,10 @@ class AutoTrader {
     if (review.decision === "close" && review.confidence >= 70 && this.config.autoCloseOnLlmClose) {
       const closed = await closeOandaTrade({ token: this.config.token, environment: this.config.environment, accountId: this.config.accountId, tradeId: trade.id });
       const managed = this.store.managedOpenTrades().find((row) => row.broker_trade_id === trade.id);
-      this.store.journalUpdateByBrokerTradeId(trade.id, "closed", closed.pnl, "Closed automatically after high-confidence LLM close decision.");
-      if (managed) await this.syncJournalUpdate({ id: managed.id, brokerTradeId: trade.id }, "closed", closed.pnl, "Closed automatically after high-confidence LLM close decision.");
+      const notes = `LLM closed: ${review.explanation}`;
+      const closePrice = Number.isFinite(closed.price) ? closed.price : null;
+      this.store.journalUpdateByBrokerTradeId(trade.id, "closed", closed.pnl, notes, { closeReason: "LLM close", closePrice, closeTransactionId: closed.transactionId });
+      if (managed) await this.syncJournalUpdate({ id: managed.id, brokerTradeId: trade.id }, "closed", closed.pnl, notes, { closeReason: "LLM close", closePrice, closeTransactionId: closed.transactionId });
       this.log({ level: "warning", event: "trade.closed_by_policy", message: `Closed ${trade.instrument} after a high-confidence LLM close decision.`, instrument: trade.instrument, details: { tradeId: trade.id, pnl: closed.pnl } });
     }
   }
@@ -298,8 +304,10 @@ class AutoTrader {
         if (this.config.closeUnprotected) {
           const closed = await closeOandaTrade({ token: this.config.token, environment: this.config.environment, accountId: this.config.accountId, tradeId: trade.id });
           const managed = managedRows.find((row) => row.broker_trade_id === trade.id);
-          this.store.journalUpdateByBrokerTradeId(trade.id, "closed", closed.pnl, "Closed because broker-side protection was missing.");
-          if (managed) await this.syncJournalUpdate({ id: managed.id, brokerTradeId: trade.id }, "closed", closed.pnl, "Closed because broker-side protection was missing.");
+          const notes = "Safety close: broker-side stop/target was missing.";
+          const closePrice = Number.isFinite(closed.price) ? closed.price : null;
+          this.store.journalUpdateByBrokerTradeId(trade.id, "closed", closed.pnl, notes, { closeReason: "Safety close", closePrice, closeTransactionId: closed.transactionId });
+          if (managed) await this.syncJournalUpdate({ id: managed.id, brokerTradeId: trade.id }, "closed", closed.pnl, notes, { closeReason: "Safety close", closePrice, closeTransactionId: closed.transactionId });
         }
         continue;
       }
@@ -312,9 +320,13 @@ class AutoTrader {
     const recentFills = await fetchOandaOrderFills({ token: this.config.token, environment: this.config.environment, accountId: this.config.accountId, from: startOfUtcDay() });
     for (const managed of managedRows) {
       if (currentIds.has(managed.broker_trade_id)) continue;
-      const pnl = recentFills.filter((fill) => fill.tradeId === managed.broker_trade_id).reduce((sum, fill) => sum + fill.pnl, 0);
-      this.store.journalUpdateByBrokerTradeId(managed.broker_trade_id, "closed", pnl, "Trade no longer open at OANDA; reconciled from transaction history.");
-      await this.syncJournalUpdate({ id: managed.id, brokerTradeId: managed.broker_trade_id }, "closed", pnl, "Trade no longer open at OANDA; reconciled from transaction history.");
+      const relatedFills = recentFills.filter((fill) => fill.tradeIds.includes(managed.broker_trade_id));
+      const pnl = relatedFills.reduce((sum, fill) => sum + fill.pnl, 0);
+      const closeFill = this.closeFillFor(recentFills, managed.broker_trade_id);
+      const closeReason = closeFill?.closeReason ?? "Closed order";
+      const notes = `${closeReason}. Trade no longer open at OANDA; reconciled from transaction history.`;
+      this.store.journalUpdateByBrokerTradeId(managed.broker_trade_id, "closed", pnl, notes, { closeReason, closePrice: closeFill?.price ?? null, closeTransactionId: closeFill?.id ?? null });
+      await this.syncJournalUpdate({ id: managed.id, brokerTradeId: managed.broker_trade_id }, "closed", pnl, notes, { closeReason, closePrice: closeFill?.price ?? null, closeTransactionId: closeFill?.id ?? null });
     }
   }
 

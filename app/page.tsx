@@ -80,6 +80,36 @@ type OpenTrade = {
   stopLoss: number | null;
   takeProfit: number | null;
 };
+type TradeFill = {
+  id: string;
+  time: string;
+  instrument: string | null;
+  tradeId: string | null;
+  tradeIds: string[];
+  pnl: number;
+  units: number;
+  price: number | null;
+  reason: string | null;
+  closeReason: string | null;
+  isEntry: boolean;
+  isClose: boolean;
+};
+type JournalEntry = {
+  id: string;
+  instrument: string;
+  direction: string;
+  status: string;
+  broker_trade_id: string | null;
+  entry_price: number | null;
+  stop_loss: number | null;
+  take_profit_1: number | null;
+  take_profit_2: number | null;
+  pnl: number | null;
+  notes: string | null;
+  opened_at: string | null;
+  closed_at: string | null;
+  metadata_json: string | null;
+};
 type TradeReview = {
   drifted: boolean;
   decision: "hold" | "review" | "reduce" | "close";
@@ -267,6 +297,19 @@ function chartPoints(candles: Candle[]) {
     .join(" ");
 }
 
+function journalMetadata(entry: JournalEntry | null) {
+  if (!entry?.metadata_json) return {} as Record<string, unknown>;
+  try { return JSON.parse(entry.metadata_json) as Record<string, unknown>; } catch { return {}; }
+}
+
+function closeSummary(entry: JournalEntry | null) {
+  if (!entry || !["closed", "cancelled", "win", "loss", "breakeven"].includes(entry.status)) return null;
+  const metadata = journalMetadata(entry);
+  const reason = typeof metadata.closeReason === "string" ? metadata.closeReason : entry.notes?.startsWith("LLM closed:") ? "LLM close" : entry.notes?.startsWith("Manual close") ? "Manual close" : "Closed order";
+  const notes = entry.notes?.startsWith("LLM closed:") ? entry.notes.slice("LLM closed:".length).trim() : entry.notes;
+  return { reason, notes };
+}
+
 export default function Home() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -291,6 +334,8 @@ export default function Home() {
   const [quote, setQuote] = useState<Quote | null>(null);
   const [account, setAccount] = useState<AccountSummary | null>(null);
   const [openTrades, setOpenTrades] = useState<OpenTrade[]>([]);
+  const [tradeFills, setTradeFills] = useState<TradeFill[]>([]);
+  const [journalEntries, setJournalEntries] = useState<JournalEntry[]>([]);
   const [eventStatus, setEventStatus] = useState<EconomicEventStatus | null>(null);
   const [tradeReview, setTradeReview] = useState<TradeReview | null>(null);
   const [monitorStatus, setMonitorStatus] = useState("");
@@ -524,7 +569,13 @@ export default function Home() {
     try {
       const response = await fetch("/api/oanda/trades?t=" + Date.now(), { cache: "no-store" });
       const payload = await response.json();
-      if (response.ok && payload.connected) setOpenTrades(Array.isArray(payload.trades) ? payload.trades : []);
+      if (response.ok && payload.connected) {
+        setOpenTrades(Array.isArray(payload.trades) ? payload.trades : []);
+        setTradeFills(Array.isArray(payload.fills) ? payload.fills : []);
+      }
+      const journalResponse = await fetch("/api/journal?limit=200&t=" + Date.now(), { cache: "no-store" });
+      const journalPayload = await journalResponse.json();
+      if (journalResponse.ok && Array.isArray(journalPayload.entries)) setJournalEntries(journalPayload.entries);
     } catch {
       // The next polling cycle will retry without interrupting the trade screen.
     }
@@ -767,6 +818,26 @@ export default function Home() {
   const estimatedTp1 = calculatedUnits && tp1Distance !== null && conversion !== null ? calculatedUnits * tp1Distance * conversion : null;
   const estimatedTp2 = calculatedUnits && tp2Distance !== null && conversion !== null ? calculatedUnits * tp2Distance * conversion : null;
   const monitoredTrade = openTrades.find((trade) => trade.instrument === instrument) ?? null;
+  const instrumentJournals = journalEntries.filter((entry) => entry.instrument === instrument);
+  const chartJournal = monitoredTrade
+    ? instrumentJournals.find((entry) => entry.broker_trade_id === monitoredTrade.id) ?? null
+    : [...instrumentJournals].sort((a, b) => (b.closed_at ?? b.opened_at ?? "").localeCompare(a.closed_at ?? a.opened_at ?? ""))[0] ?? null;
+  const chartLevels = monitoredTrade
+    ? { entry: monitoredTrade.price, stopLoss: monitoredTrade.stopLoss, takeProfit1: monitoredTrade.takeProfit, takeProfit2: null }
+    : chartJournal
+      ? { entry: chartJournal.entry_price, stopLoss: chartJournal.stop_loss, takeProfit1: chartJournal.take_profit_1, takeProfit2: chartJournal.take_profit_2 }
+      : { entry: planEntry, stopLoss: planStop, takeProfit1: planTp1, takeProfit2: planTp2 };
+  const chartClose = closeSummary(chartJournal);
+  const chartMarkers = useMemo(() => tradeFills
+    .filter((fill) => fill.instrument === instrument && (fill.isEntry || fill.isClose) && fill.price !== null)
+    .flatMap((fill) => {
+      const journal = journalEntries.find((entry) => entry.broker_trade_id && fill.tradeIds.includes(entry.broker_trade_id));
+      const llmClose = Boolean(journal?.notes?.startsWith("LLM closed:"));
+      const markers = [] as Array<{ time: string; price: number; kind: "entry" | "close"; label: string; color: string }>;
+      if (fill.isEntry) markers.push({ time: fill.time, price: fill.price!, kind: "entry", label: fill.units < 0 ? "SHORT ENTRY" : "LONG ENTRY", color: "#a4ffcf" });
+      if (fill.isClose) markers.push({ time: fill.time, price: fill.price!, kind: "close", label: llmClose ? "LLM CLOSE" : fill.closeReason ?? "CLOSE", color: llmClose ? "#c4b5fd" : fill.closeReason === "TP hit" ? "#7dd3fc" : "#fb7185" });
+      return markers;
+    }), [instrument, journalEntries, tradeFills]);
   const totalUnrealizedPL = openTrades.reduce((total, trade) => total + trade.unrealizedPL, 0);
   const currentEventStatus = eventStatus?.instrument === instrument ? eventStatus : null;
   const newsBlocked = !currentEventStatus || !currentEventStatus.available || currentEventStatus.blocked;
@@ -2316,24 +2387,15 @@ export default function Home() {
                 instrument={instrument}
                 granularity={granularity}
                 candles={data?.candles}
-                levels={
-                  marketSetup
-                    ? {
-                        entry: marketAiPlan?.entry ?? marketSetup.entry,
-                        stopLoss:
-                          marketAiPlan?.stopLoss ?? marketSetup.stopLoss,
-                        takeProfit1:
-                          marketAiPlan?.takeProfit1 ?? marketSetup.takeProfit1,
-                        takeProfit2:
-                          marketAiPlan?.takeProfit2 ?? marketSetup.takeProfit2,
-                      }
-                    : undefined
-                }
+                levels={chartLevels}
+                markers={chartMarkers}
+                tradeSummary={chartJournal ? { status: chartJournal.status === "closed" ? "CLOSED" : "EXECUTED", closeReason: chartClose?.reason, closeNotes: chartClose?.notes } : undefined}
               />
               <p className="mt-3 text-[11px] leading-5 text-[#71887f]">
                 Candles are fetched from OANDA and rendered with TradingView
-                Lightweight Charts. Entry, stop loss and take-profit lines are
-                actual chart overlays tied to the selected strategy.
+                Lightweight Charts. Executed entry, stop loss, take-profit and
+                close markers are taken from OANDA fills; close reasons are
+                matched to the journal review.
               </p>
             </section>
 

@@ -3,7 +3,8 @@
 import { useEffect, useMemo, useRef } from "react";
 
 type Candle = { time: string; open: number; high: number; low: number; close: number; complete: boolean };
-type SeriesApi = { setData(data: Array<Record<string, number>>): void; createPriceLine(options: Record<string, unknown>): void };
+type ChartMarker = { time: string; price: number; kind: "entry" | "close"; label: string; color: string };
+type SeriesApi = { setData(data: Array<Record<string, number>>): void; setMarkers(markers: Array<Record<string, unknown>>): void; createPriceLine(options: Record<string, unknown>): void };
 type ChartApi = { addCandlestickSeries(options: Record<string, unknown>): SeriesApi; applyOptions(options: Record<string, unknown>): void; timeScale(): { fitContent(): void }; remove(): void };
 type TradingViewLibrary = { createChart(container: HTMLElement, options: Record<string, unknown>): ChartApi };
 
@@ -41,11 +42,13 @@ function decimalsFor(instrument: string) {
   return 5;
 }
 
-export function TradingViewChart({ instrument, granularity, candles, levels }: {
+export function TradingViewChart({ instrument, granularity, candles, levels, markers, tradeSummary }: {
   instrument: string;
   granularity: string;
   candles?: Candle[];
   levels?: { entry?: number | null; stopLoss?: number | null; takeProfit1?: number | null; takeProfit2?: number | null };
+  markers?: ChartMarker[];
+  tradeSummary?: { status: string; closeReason?: string | null; closeNotes?: string | null };
 }) {
   const container = useRef<HTMLDivElement>(null);
   const decimals = decimalsFor(instrument);
@@ -55,6 +58,7 @@ export function TradingViewChart({ instrument, granularity, candles, levels }: {
     { price: levels?.takeProfit1 ?? NaN, color: "#7dd3fc", title: "TP1" },
     { price: levels?.takeProfit2 ?? NaN, color: "#c4b5fd", title: "TP2" },
   ].filter((line) => Number.isFinite(line.price)), [levels?.entry, levels?.stopLoss, levels?.takeProfit1, levels?.takeProfit2]);
+  const chartMarkers = useMemo(() => markers?.filter((marker) => Number.isFinite(marker.price) && Number.isFinite(unixTime(marker.time))) ?? [], [markers]);
 
   useEffect(() => {
     const host = container.current;
@@ -79,6 +83,15 @@ export function TradingViewChart({ instrument, granularity, candles, levels }: {
         priceFormat: { type: "price", precision: decimals, minMove: 1 / (10 ** decimals) },
       });
       series.setData(candles.filter((c) => c.complete || c === candles.at(-1)).map((c) => ({ time: unixTime(c.time), open: c.open, high: c.high, low: c.low, close: c.close })));
+      const firstCandle = unixTime(candles[0].time);
+      const lastCandle = unixTime(candles.at(-1)!.time);
+      series.setMarkers(chartMarkers.filter((marker) => {
+        const time = unixTime(marker.time);
+        return time >= firstCandle && time <= lastCandle;
+      }).map((marker) => ({
+        time: unixTime(marker.time), position: marker.kind === "entry" ? "belowBar" : "aboveBar",
+        color: marker.color, shape: marker.kind === "entry" ? (marker.label === "SHORT ENTRY" ? "arrowDown" : "arrowUp") : "circle", text: marker.label,
+      })));
       chartLevels.forEach((line) => series.createPriceLine({ price: line.price, color: line.color, lineWidth: 2, lineStyle: 0, axisLabelVisible: true, title: line.title }));
       chart.timeScale().fitContent();
       const resize = new ResizeObserver(() => chart?.applyOptions({ width: host.clientWidth }));
@@ -94,7 +107,7 @@ export function TradingViewChart({ instrument, granularity, candles, levels }: {
       chart?.remove();
       host.replaceChildren();
     };
-  }, [candles, chartLevels, decimals, granularity, instrument]);
+  }, [candles, chartLevels, chartMarkers, decimals, granularity, instrument]);
 
   const format = (value?: number | null) => value == null ? "—" : value.toFixed(decimals);
   return (
@@ -104,8 +117,10 @@ export function TradingViewChart({ instrument, granularity, candles, levels }: {
         <span className="rounded bg-rose-400/10 px-2 py-1 text-rose-200">SL {format(levels.stopLoss)}</span>
         <span className="rounded bg-sky-400/10 px-2 py-1 text-sky-200">TP1 {format(levels.takeProfit1)}</span>
         <span className="rounded bg-violet-400/10 px-2 py-1 text-violet-200">TP2 {format(levels.takeProfit2)}</span>
+        {tradeSummary && <span className="rounded bg-white/5 px-2 py-1 text-[#d9e8e1]">{tradeSummary.status}</span>}
         <span className="ml-auto text-[#71887f]">Live levels · TradingView Lightweight Charts</span>
       </div>}
+      {tradeSummary?.closeReason && <div className="border-b border-white/10 bg-white/[.025] px-3 py-2 text-[11px] text-[#c7d2cc]">Close reason: <strong className="text-white">{tradeSummary.closeReason}</strong>{tradeSummary.closeNotes ? <span className="ml-2 text-[#8fa59b]">{tradeSummary.closeNotes}</span> : null}</div>}
       <div ref={container} className="h-[560px] w-full" />
       {!candles?.length && <div className="grid h-[560px] place-items-center text-sm text-[#71887f]">Connect OANDA to load the chart.</div>}
     </div>
