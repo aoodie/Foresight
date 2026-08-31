@@ -1011,6 +1011,9 @@ export default function Home() {
           <NavLink href="/" active={isOverview}>
             Overview
           </NavLink>
+          <NavLink href="/open-trades" active={false}>
+            Open trades
+          </NavLink>
           <NavLink href="/markets" active={isMarkets}>
             Markets
           </NavLink>

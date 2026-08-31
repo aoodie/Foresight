@@ -54,6 +54,7 @@ export default function JournalPage() {
         <Link href="/" className="text-sm font-semibold tracking-[.18em]">FORESIGHT FX <span className="text-[#89f6bf]">/ TRADING JOURNAL</span></Link>
         <nav className="flex flex-wrap gap-2 text-xs">
           <Link href="/" className="rounded-md px-3 py-2 text-[#a9bdb6] hover:bg-white/5">Overview</Link>
+          <Link href="/open-trades" className="rounded-md px-3 py-2 text-[#a9bdb6] hover:bg-white/5">Open trades</Link>
           <Link href="/markets" className="rounded-md px-3 py-2 text-[#a9bdb6] hover:bg-white/5">Markets</Link>
           <Link href="/logs" className="rounded-md px-3 py-2 text-[#a9bdb6] hover:bg-white/5">System logs</Link>
         </nav>
