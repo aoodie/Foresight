@@ -1,6 +1,16 @@
 import type { NormalisedCandle } from "./oanda-api.ts";
 
-export const STRATEGY_VERSION = "scanner-v1.2.0";
+export const STRATEGY_VERSION = "scanner-v1.3.0";
+
+export type MarketRegime = {
+  type: "trending" | "ranging" | "breakout" | "volatile" | "compression";
+  direction: "bullish" | "bearish" | "neutral";
+  volatility: "low" | "normal" | "high";
+  label: string;
+  confidence: number;
+  explanation: string;
+  playbook: string;
+};
 
 export type SupportResistanceZone = {
   kind: "support" | "resistance";
@@ -39,6 +49,7 @@ export type ScannerResult = {
   change24h: number;
   rsi: number;
   atrPercent: number;
+  marketRegime: MarketRegime;
   rangePosition: number;
   entry: number | null;
   stopLoss: number | null;
@@ -150,6 +161,75 @@ function atr(candles: NormalisedCandle[], period = 14) {
       ),
     );
   return ranges.reduce((sum, value) => sum + value, 0) / ranges.length;
+}
+
+export function classifyMarketRegime(candlesInput: NormalisedCandle[]): MarketRegime {
+  const candles = candlesInput.filter((candle) => candle.complete);
+  if (candles.length < 55) throw new Error("At least 55 completed candles are required for regime classification.");
+  const closes = candles.map((candle) => candle.close);
+  const currentAtr = atr(candles);
+  const ema20 = ema(closes.slice(-50), 20);
+  const ema50 = ema(closes, 50);
+  const recentCloses = closes.slice(-21);
+  const path = recentCloses.slice(1).reduce((sum, close, index) => sum + Math.abs(close - recentCloses[index]), 0);
+  const efficiency = path > 0 ? Math.abs(recentCloses.at(-1)! - recentCloses[0]) / path : 0;
+  const trueRanges = candles.slice(-43).slice(1).map((candle, index) => {
+    const previous = candles.slice(-43)[index];
+    return Math.max(candle.high - candle.low, Math.abs(candle.high - previous.close), Math.abs(candle.low - previous.close));
+  });
+  const baselineRanges = trueRanges.slice(0, -14);
+  const baselineAtr = baselineRanges.length ? baselineRanges.reduce((sum, value) => sum + value, 0) / baselineRanges.length : currentAtr;
+  const volatilityRatio = baselineAtr > 0 ? currentAtr / baselineAtr : 1;
+  const trendStrength = currentAtr > 0 ? Math.abs(ema20 - ema50) / currentAtr : 0;
+  const last = candles.at(-1)!;
+  const prior = candles.slice(-21, -1);
+  const breaksHigh = last.close > Math.max(...prior.map((candle) => candle.high));
+  const breaksLow = last.close < Math.min(...prior.map((candle) => candle.low));
+  const direction = ema20 > ema50 && last.close > ema20 ? "bullish" : ema20 < ema50 && last.close < ema20 ? "bearish" : "neutral";
+  const volatility = volatilityRatio >= 1.25 ? "high" : volatilityRatio <= 0.8 ? "low" : "normal";
+  const percent = (value: number) => `${Math.round(value * 100)}%`;
+
+  if ((breaksHigh || breaksLow) && volatilityRatio >= 0.95) {
+    const breakoutDirection = breaksHigh ? "bullish" : "bearish";
+    return {
+      type: "breakout", direction: breakoutDirection, volatility,
+      label: `${breakoutDirection === "bullish" ? "Bullish" : "Bearish"} breakout`,
+      confidence: Math.round(Math.min(95, 62 + efficiency * 24 + Math.max(0, volatilityRatio - 1) * 18)),
+      explanation: `Price closed beyond its prior 20-candle ${breaksHigh ? "high" : "low"}; directional efficiency is ${percent(efficiency)} and ATR is ${volatilityRatio.toFixed(2)}× its baseline.`,
+      playbook: "Wait for acceptance or a controlled retest. Do not chase the first expansion candle.",
+    };
+  }
+  if (trendStrength >= 0.65 && efficiency >= 0.28 && direction !== "neutral") {
+    return {
+      type: "trending", direction, volatility,
+      label: `${direction === "bullish" ? "Bull" : "Bear"} trend`,
+      confidence: Math.round(Math.min(95, 55 + trendStrength * 18 + efficiency * 28)),
+      explanation: `The 20/50 EMA separation is ${trendStrength.toFixed(2)} ATR and price travelled with ${percent(efficiency)} directional efficiency.`,
+      playbook: "Prefer pullbacks and continuation entries with the trend. Avoid fading the move without a confirmed reversal.",
+    };
+  }
+  if (volatilityRatio <= 0.78) {
+    return {
+      type: "compression", direction: "neutral", volatility: "low", label: "Compression",
+      confidence: Math.round(Math.min(95, 58 + (0.78 - volatilityRatio) * 90)),
+      explanation: `ATR has contracted to ${volatilityRatio.toFixed(2)}× its recent baseline and price is not moving efficiently.`,
+      playbook: "Stand aside until price closes outside the range with confirmation; prepare both breakout directions.",
+    };
+  }
+  if (volatilityRatio >= 1.3) {
+    return {
+      type: "volatile", direction, volatility: "high", label: "Volatility spike",
+      confidence: Math.round(Math.min(95, 60 + (volatilityRatio - 1.3) * 35 + (1 - efficiency) * 12)),
+      explanation: `ATR is ${volatilityRatio.toFixed(2)}× its baseline, but directional efficiency is only ${percent(efficiency)}.`,
+      playbook: "Use risk-based sizing, require stronger confirmation, and avoid entries in the middle of wide candles.",
+    };
+  }
+  return {
+    type: "ranging", direction: "neutral", volatility, label: "Range",
+    confidence: Math.round(Math.min(90, 55 + (1 - efficiency) * 25 + Math.max(0, 0.65 - trendStrength) * 15)),
+    explanation: `Directional efficiency is ${percent(efficiency)} and EMA separation is only ${trendStrength.toFixed(2)} ATR, so neither side has sustained control.`,
+    playbook: "Trade only confirmed reactions at support or resistance. Avoid entries near the middle of the range.",
+  };
 }
 
 export function detectSupportResistanceZones(args: {
@@ -266,6 +346,7 @@ export function analyseInstrument(args: {
   const ema50 = ema(closes, 50);
   const currentRsi = rsi(closes);
   const currentAtr = atr(candles);
+  const marketRegime = classifyMarketRegime(candles);
   const latestTime = new Date(candles.at(-1)!.time).getTime();
   const comparisonTime = latestTime - 24 * 60 * 60 * 1000;
   const comparisonCandle = [...candles].reverse().find((candle) => new Date(candle.time).getTime() <= comparisonTime) ?? candles[0];
@@ -372,6 +453,7 @@ export function analyseInstrument(args: {
     change24h,
     rsi: currentRsi,
     atrPercent: (currentAtr / price) * 100,
+    marketRegime,
     rangePosition,
     entry,
     stopLoss,

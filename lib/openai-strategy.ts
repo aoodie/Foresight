@@ -7,6 +7,15 @@ export type StrategyMarket = {
   change24h: number;
   rsi: number;
   atrPercent: number;
+  marketRegime: {
+    type: "trending" | "ranging" | "breakout" | "volatile" | "compression";
+    direction: "bullish" | "bearish" | "neutral";
+    volatility: "low" | "normal" | "high";
+    label: string;
+    confidence: number;
+    explanation: string;
+    playbook: string;
+  };
   rangePosition: number;
   analysis: string;
   reasons: string[];
@@ -35,7 +44,7 @@ export type AiStrategy = {
   methodology: string[];
 };
 
-export const strategyInstructions = "You are a cautious institutional-style FX research analyst writing for an ordinary trader. Produce one independent research strategy for each supplied market using the selected trading mode's timeframe profile and the supplied multi-timeframe OANDA snapshot plus LuxAlgo Library MCP research. Require confluence from multiple independent LuxAlgo families when available: Price Action Concepts market structure, liquidity, order blocks or imbalances, momentum, and volatility-based risk. Do not let RSI alone create a trade. List the actual LuxAlgo concepts used in methodology and say when confirmation is missing. Write every user-facing field in direct, plain English. Do not use abbreviations or unexplained jargon such as H4, EMA, RSI, ATR, SMC, ICT, FVG, displacement, structure shift or liquidity sweep. If a technical term is essential, explain it immediately in everyday language. Say exactly what must happen before entry, why the stop belongs there, and what would prove the idea wrong. Set structure-aware entry, stop loss and two take profits; do not mechanically copy the scanner's baseline levels. A valid trade must have coherent directional price ordering and first-target risk/reward of at least 1.5. Treat extreme momentum readings as a warning that price may bounce or pull back; never encourage chasing an overstretched move. Return wait/no_trade with null levels when timeframes conflict, LuxAlgo confirmation is insufficient, or confidence is below 60. Never invent chart patterns not established by the supplied data, and never invent news or economic events: eventRisk must tell the reader which relevant currency or US event risks to verify in the live calendar before entry. Keep analysis concise. This is research, not personalised financial advice, and no trade is executed.";
+export const strategyInstructions = "You are a cautious institutional-style FX research analyst writing for an ordinary trader. Produce one independent research strategy for each supplied market using the selected trading mode's timeframe profile, the deterministic market-regime classification, the supplied multi-timeframe OANDA snapshot and LuxAlgo Library MCP research. Respect the regime: favour pullbacks in trends, confirmed edge reactions in ranges, retests after breakouts, patience in compression, and stricter confirmation during volatility spikes. Require confluence from multiple independent LuxAlgo families when available: Price Action Concepts market structure, liquidity, order blocks or imbalances, momentum, and volatility-based risk. Do not let RSI alone create a trade. List the actual LuxAlgo concepts used in methodology and say when confirmation is missing. Write every user-facing field in direct, plain English. Do not use abbreviations or unexplained jargon such as H4, EMA, RSI, ATR, SMC, ICT, FVG, displacement, structure shift or liquidity sweep. If a technical term is essential, explain it immediately in everyday language. Say exactly what must happen before entry, why the stop belongs there, and what would prove the idea wrong. Set structure-aware entry, stop loss and two take profits; do not mechanically copy the scanner's baseline levels. A valid trade must have coherent directional price ordering and first-target risk/reward of at least 1.5. Treat extreme momentum readings as a warning that price may bounce or pull back; never encourage chasing an overstretched move. Return wait/no_trade with null levels when timeframes conflict, LuxAlgo confirmation is insufficient, or confidence is below 60. Never invent chart patterns not established by the supplied data, and never invent news or economic events: eventRisk must tell the reader which relevant currency or US event risks to verify in the live calendar before entry. Keep analysis concise. This is research, not personalised financial advice, and no trade is executed.";
 
 export const reviewInstructions = "Review an already-open FX or CFD trade against the strategy that created it. This is a monitoring check, not an order-execution instruction. Decide whether the strategy has materially drifted. Use only the supplied trade, current quote, original plan, volatility, timeframe data and high-impact event data. If an event context is supplied, assess the event's likely sentiment only from the supplied actual, forecast and previous values; if actual data is missing, use unclear or mixed and say that confirmation is unavailable. Decide whether to hold, review, reduce or close the position. Do not invent news or prices. Keep the explanation plain English and concise. Do not tell the system to move a stop automatically. If the stop or target has been reached, say so clearly. A normal fluctuation inside the original plan is hold; a meaningful break of the invalidation logic or adverse event reaction needs review or close. This is research, not personalised financial advice.";
 
@@ -79,6 +88,7 @@ export function isStrategyMarket(value: unknown): value is StrategyMarket {
   const market = value as Record<string, unknown>;
   return typeof market.instrument === "string" && typeof market.label === "string" && ["long", "short", "neutral"].includes(String(market.bias)) &&
     ["score", "price", "change24h", "rsi", "atrPercent", "rangePosition"].every((key) => typeof market[key] === "number" && Number.isFinite(market[key])) &&
+    market.marketRegime !== null && typeof market.marketRegime === "object" &&
     typeof market.analysis === "string" && Array.isArray(market.reasons) && market.reasons.every((reason) => typeof reason === "string") &&
     typeof market.invalidation === "string" && typeof market.updatedAt === "string";
 }

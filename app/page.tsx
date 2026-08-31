@@ -190,6 +190,15 @@ type ScanResult = {
   change24h: number;
   rsi: number;
   atrPercent: number;
+  marketRegime: {
+    type: "trending" | "ranging" | "breakout" | "volatile" | "compression";
+    direction: "bullish" | "bearish" | "neutral";
+    volatility: "low" | "normal" | "high";
+    label: string;
+    confidence: number;
+    explanation: string;
+    playbook: string;
+  };
   rangePosition: number;
   entry: number | null;
   stopLoss: number | null;
@@ -919,6 +928,7 @@ export default function Home() {
           bias: marketSetup.bias,
           rsi: marketSetup.rsi,
           atrPercent: marketSetup.atrPercent,
+          marketRegime: marketSetup.marketRegime,
           timeframeAlignment: marketSetup.timeframeAlignment,
           selectedStrategy: marketSetup.selectedStrategy,
         },
@@ -979,7 +989,7 @@ export default function Home() {
             thesis: marketAiPlan?.analysis ?? marketSetup.analysis,
             evidence: marketAiPlan?.reasons?.join(" ") ?? marketSetup.reasons.join(" "),
             invalidation: marketAiPlan?.invalidation ?? marketSetup.invalidation,
-            metadata: { strategyVersion: marketSetup.strategyVersion, score: marketSetup.score, rsi: marketSetup.rsi, atrPercent: marketSetup.atrPercent, timeframeAlignment: marketSetup.timeframeAlignment },
+            metadata: { strategyVersion: marketSetup.strategyVersion, score: marketSetup.score, rsi: marketSetup.rsi, atrPercent: marketSetup.atrPercent, marketRegime: marketSetup.marketRegime, timeframeAlignment: marketSetup.timeframeAlignment },
           },
         }),
       });
@@ -1378,6 +1388,7 @@ export default function Home() {
                       </p>
                       <div className="mt-2">
                         <Bias bias={topSetup.bias} />
+                        <span className="ml-2"><RegimeBadge regime={topSetup.marketRegime} /></span>
                         <span className="ml-2 text-xs text-[#8aa29a]">
                           Score {topSetup.score}/100
                         </span>
@@ -1421,6 +1432,7 @@ export default function Home() {
                       <th className="px-5 py-3 font-medium">Rank</th>
                       <th className="px-3 py-3 font-medium">Market</th>
                       <th className="px-3 py-3 font-medium">Bias</th>
+                      <th className="px-3 py-3 font-medium">Regime</th>
                       <th className="px-3 py-3 font-medium">Score</th>
                       <th className="px-3 py-3 font-medium">Align</th>
                       <th className="px-3 py-3 font-medium">RSI</th>
@@ -1451,6 +1463,10 @@ export default function Home() {
                         </td>
                         <td className="px-3 py-4">
                           <Bias bias={result.bias} />
+                        </td>
+                        <td className="px-3 py-4">
+                          <RegimeBadge regime={result.marketRegime} />
+                          <p className="mt-1 text-[9px] uppercase tracking-[.08em] text-[#71887f]">{result.marketRegime.volatility} volatility · {result.marketRegime.confidence}%</p>
                         </td>
                         <td className="px-3 py-4 font-mono">{result.score}</td>
                         <td className="px-3 py-4">
@@ -2074,6 +2090,15 @@ export default function Home() {
                     <p className="mt-5 text-sm leading-6 text-[#c0d1ca]">
                       {marketSetup.analysis}
                     </p>
+                    <div className="mt-4 rounded-xl border border-[#a4ffcf]/15 bg-[#a4ffcf]/[.035] p-4">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div><p className="text-[10px] tracking-[.12em] text-[#89f6bf]">MARKET REGIME</p><h3 className="mt-1 text-lg text-white">{marketSetup.marketRegime.label}</h3></div>
+                        <div className="flex flex-wrap gap-2"><RegimeBadge regime={marketSetup.marketRegime} /><span className="rounded-full bg-white/[.05] px-2.5 py-1 text-[10px] uppercase tracking-[.08em] text-[#a9bdb6]">{marketSetup.marketRegime.volatility} volatility</span></div>
+                      </div>
+                      <p className="mt-3 text-xs leading-5 text-[#c0d1ca]">{marketSetup.marketRegime.explanation}</p>
+                      <p className="mt-2 text-xs leading-5 text-[#89f6bf]"><span className="font-semibold">Trading implication:</span> {marketSetup.marketRegime.playbook}</p>
+                      <p className="mt-2 text-[10px] text-[#71887f]">Confidence {marketSetup.marketRegime.confidence}% · completed candles only · EMA separation · directional efficiency · range breaks · ATR expansion/contraction.</p>
+                    </div>
                     <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
                       <PlanLevel
                         label="Reference entry"
@@ -2611,6 +2636,16 @@ function Bias({ bias }: { bias: "long" | "short" | "neutral" }) {
       {bias}
     </span>
   );
+}
+function RegimeBadge({ regime }: { regime: ScanResult["marketRegime"] }) {
+  const tone = regime.type === "trending" || regime.type === "breakout"
+    ? "bg-[#59dfa9]/10 text-[#89f6bf]"
+    : regime.type === "volatile"
+      ? "bg-rose-400/10 text-rose-300"
+      : regime.type === "compression"
+        ? "bg-sky-400/10 text-sky-200"
+        : "bg-amber-400/10 text-amber-300";
+  return <span className={tone + " inline-flex rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[.08em]"}>{regime.label}</span>;
 }
 function PlanLevel({
   label,

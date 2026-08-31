@@ -69,6 +69,23 @@ test("ranks a strongly trending instrument with an actionable bias", async () =>
   assert.ok(result.takeProfit2 > result.takeProfit1);
   assert.equal(result.riskReward1, 1.5);
   assert.equal(result.reasons.length, 4);
+  assert.ok(["trending", "breakout"].includes(result.marketRegime.type));
+  assert.equal(result.marketRegime.direction, "bullish");
+  assert.ok(result.marketRegime.confidence >= 60);
+});
+
+test("identifies volatility compression from completed candles", async () => {
+  const { classifyMarketRegime } = await vite.ssrLoadModule("/lib/market-scanner.ts");
+  const candles = Array.from({ length: 70 }, (_, index) => {
+    const wide = index < 50;
+    const range = wide ? 0.004 : 0.0005;
+    const centre = 1.1 + Math.sin(index) * range * 0.1;
+    return { time: new Date(Date.UTC(2026, 0, 1, index)).toISOString(), open: centre, high: centre + range / 2, low: centre - range / 2, close: centre, complete: true };
+  });
+  const regime = classifyMarketRegime(candles);
+  assert.equal(regime.type, "compression");
+  assert.equal(regime.volatility, "low");
+  assert.match(regime.playbook, /breakout/i);
 });
 
 test("treats a flat market as neutral momentum instead of overbought", async () => {

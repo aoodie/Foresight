@@ -321,7 +321,7 @@ class AutoTrader {
     const atr = result?.atrPercent && result.price ? result.price * result.atrPercent / 100 : Math.abs((trade.takeProfit ?? trade.price) - (trade.stopLoss ?? trade.price)) / 1.5;
     const materiallyMoved = !prior || Date.now() - prior.at >= this.config.llmReviewMs || Math.abs(currentPrice - prior.price) >= atr * this.config.llmMoveAtrFraction;
     if (!materiallyMoved) return;
-    const technicalSnapshot = result ? { bias: result.bias, score: result.score, rsi: result.rsi, atrPercent: result.atrPercent, timeframeAlignment: result.timeframeAlignment, strategies: result.strategies, invalidation: result.invalidation } : {};
+    const technicalSnapshot = result ? { bias: result.bias, score: result.score, rsi: result.rsi, atrPercent: result.atrPercent, marketRegime: result.marketRegime, timeframeAlignment: result.timeframeAlignment, strategies: result.strategies, invalidation: result.invalidation } : {};
     const input = { reviewReason: eventContext ? "high_impact_news_released" : "material_trade_change", tradeSource: source, style: this.config.mode, trade: { id: trade.id, instrument: trade.instrument, units: trade.units, price: trade.price, stopLoss: trade.stopLoss, takeProfit: trade.takeProfit }, currentPrice, technicalSnapshot, eventContext };
     const cacheKey = await hashInput({ model: this.config.llmModel, baseUrl: this.config.llmBaseUrl, input: { ...input, currentPriceBucket: priceBucket(currentPrice, result?.atrPercent ?? 0.2) } });
     const cached = this.store.cacheGet<LiveTradeReview>(cacheKey);
