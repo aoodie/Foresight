@@ -36,6 +36,24 @@ test("rejects empty OANDA payloads", async () => {
   assert.throws(() => normaliseOandaPrice({ prices: [{ time: "2026-01-01T12:00:00Z", bids: [{ price: "1.1" }], asks: [{ price: "1.2" }] }] }), /conversion factors/i);
 });
 
+test("attaches client extensions to both the OANDA order and resulting trade", async () => {
+  const { submitOandaMarketOrder } = await vite.ssrLoadModule("/lib/oanda-api.ts");
+  const originalFetch = globalThis.fetch;
+  let submittedBody;
+  globalThis.fetch = async (_url, init) => {
+    submittedBody = JSON.parse(String(init.body));
+    return new Response(JSON.stringify({ orderFillTransaction: { id: "11", time: "2026-01-01T00:00:00Z", units: "1000", price: "1.1", tradeOpened: { tradeID: "12" } } }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+  try {
+    const extensions = { id: "foresight-test", tag: "foresight-manual", comment: "intraday" };
+    await submitOandaMarketOrder({ token: "test", environment: "practice", accountId: "account", instrument: "EUR_USD", units: 1000, clientExtensions: extensions });
+    assert.deepEqual(submittedBody.order.clientExtensions, extensions);
+    assert.deepEqual(submittedBody.order.tradeClientExtensions, extensions);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("ranks a strongly trending instrument with an actionable bias", async () => {
   const { analyseInstrument } = await vite.ssrLoadModule("/lib/market-scanner.ts");
   const candles = Array.from({ length: 80 }, (_, index) => {

@@ -78,7 +78,10 @@ export async function submitOandaMarketOrder(args: {
     order: {
       type: "MARKET", instrument: args.instrument, units: String(args.units),
       timeInForce: "FOK", positionFill: "DEFAULT",
-      ...(args.clientExtensions ? { clientExtensions: args.clientExtensions } : {}),
+      ...(args.clientExtensions ? {
+        clientExtensions: args.clientExtensions,
+        tradeClientExtensions: args.clientExtensions,
+      } : {}),
       ...(args.stopLoss ? { stopLossOnFill: { price: args.stopLoss.toFixed(instrumentPricePrecision(args.instrument)), timeInForce: "GTC" } } : {}),
       ...(args.takeProfit ? { takeProfitOnFill: { price: args.takeProfit.toFixed(instrumentPricePrecision(args.instrument)), timeInForce: "GTC" } } : {}),
     },
@@ -234,6 +237,7 @@ export async function fetchOandaOpenTrades(args: { token: string; environment: O
       unrealizedPL: Number(trade.unrealizedPL ?? 0),
       clientId: trade.clientExtensions?.id ?? null,
       clientTag: trade.clientExtensions?.tag ?? null,
+      clientComment: trade.clientExtensions?.comment ?? null,
       stopLoss: Number.isFinite(Number(trade.stopLossOrder?.price)) ? Number(trade.stopLossOrder?.price) : null,
       takeProfit: Number.isFinite(Number(trade.takeProfitOrder?.price)) ? Number(trade.takeProfitOrder?.price) : null,
     }];

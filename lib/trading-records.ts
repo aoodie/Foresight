@@ -1,4 +1,6 @@
 import { env } from "cloudflare:workers";
+import { foresightTradeSource } from "./trade-monitoring";
+import { standardLots } from "./trade-risk";
 
 type RuntimeEnv = { DB: D1Database };
 const runtime = env as unknown as RuntimeEnv;
@@ -106,6 +108,9 @@ type BrokerSnapshotTrade = {
   units: number;
   stopLoss: number | null;
   takeProfit: number | null;
+  clientId?: string | null;
+  clientTag?: string | null;
+  clientComment?: string | null;
 };
 
 type BrokerSnapshotFill = {
@@ -133,7 +138,37 @@ export async function reconcileJournalFromBrokerSnapshot(input: {
   openTrades: BrokerSnapshotTrade[];
   fills: BrokerSnapshotFill[];
   environment: string;
+  accountId?: string | null;
 }) {
+  const knownRows = await runtime.DB.prepare("SELECT broker_trade_id FROM trade_journal WHERE broker_trade_id IS NOT NULL LIMIT 1000").all<{ broker_trade_id: string }>();
+  const knownBrokerIds = new Set((knownRows.results ?? []).map((row) => row.broker_trade_id));
+  let importedUpdates = 0;
+  for (const trade of input.openTrades) {
+    const source = foresightTradeSource(trade.clientTag);
+    if (!source || knownBrokerIds.has(trade.id)) continue;
+    await createJournalEntry({
+      id: `oanda:${input.environment}:${input.accountId ?? "unknown"}:${trade.id}`,
+      environment: input.environment,
+      accountId: input.accountId ?? null,
+      instrument: trade.instrument,
+      direction: trade.units > 0 ? "long" : "short",
+      style: trade.clientComment || "intraday",
+      strategyName: source === "autonomous" ? "Autotrader recovery" : "Dashboard trade recovery",
+      status: "open",
+      entryPrice: trade.price,
+      stopLoss: trade.stopLoss,
+      takeProfit1: trade.takeProfit,
+      units: trade.units,
+      lots: standardLots(trade.instrument, trade.units),
+      brokerTradeId: trade.id,
+      notes: "Recovered from the tagged OANDA trade because its journal event was missing.",
+      openedAt: trade.openTime,
+      metadata: { recoveredFromBroker: true, source, clientId: trade.clientId, clientTag: trade.clientTag },
+    });
+    knownBrokerIds.add(trade.id);
+    importedUpdates += 1;
+  }
+
   const rows = await runtime.DB.prepare("SELECT id, broker_trade_id, instrument, status, opened_at, metadata_json FROM trade_journal WHERE broker_trade_id IS NOT NULL AND status IN ('submitted', 'open', 'reconciliation_required') ORDER BY created_at ASC LIMIT 200").all<{
     id: string; broker_trade_id: string; instrument: string; status: string; opened_at: string | null; metadata_json: string | null;
   }>();
@@ -172,5 +207,5 @@ export async function reconcileJournalFromBrokerSnapshot(input: {
     closedUpdates += 1;
   }
 
-  return { checked: rows.results?.length ?? 0, activityUpdates, closedUpdates };
+  return { checked: rows.results?.length ?? 0, importedUpdates, activityUpdates, closedUpdates };
 }

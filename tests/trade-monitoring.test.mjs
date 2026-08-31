@@ -8,7 +8,10 @@ const vite = await createServer({ appType: "custom", configFile: false, root, re
 after(async () => vite.close());
 
 test("reviews worker and tagged dashboard trades but ignores unrelated broker trades", async () => {
-  const { tradeReviewSource } = await vite.ssrLoadModule("/lib/trade-monitoring.ts");
+  const { foresightTradeSource, tradeReviewSource } = await vite.ssrLoadModule("/lib/trade-monitoring.ts");
+  assert.equal(foresightTradeSource("foresight-autotrader"), "autonomous");
+  assert.equal(foresightTradeSource("foresight-manual"), "dashboard_manual");
+  assert.equal(foresightTradeSource("other-system"), null);
   assert.equal(tradeReviewSource({ managedByWorker: true, clientTag: null, monitorDashboardTrades: true }), "autonomous");
   assert.equal(tradeReviewSource({ managedByWorker: false, clientTag: "foresight-manual", monitorDashboardTrades: true }), "dashboard_manual");
   assert.equal(tradeReviewSource({ managedByWorker: false, clientTag: "other-system", monitorDashboardTrades: true }), null);

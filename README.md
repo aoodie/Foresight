@@ -51,6 +51,10 @@ OANDA. Changes to units, stop loss, or take profit are recorded as broker
 activity. Closed trades use the broker close time, transaction, reason, price,
 and trade-level realised P/L. Reconciliation is idempotent, so refreshing a
 view repairs missing updates without duplicating trades.
+The hosted Site and VPS worker must use the same
+`AUTOTRADER_WEBHOOK_SECRET`; otherwise worker-created journal events are
+rejected. As a fallback, refreshing Journal also recovers missing open trades
+tagged `foresight-manual` or `foresight-autotrader` at OANDA.
 
 The worker does not call the LLM on every price update. It caches reviews and
 only requests a new review after a material price move, a review interval, or

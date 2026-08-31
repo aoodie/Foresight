@@ -14,14 +14,15 @@ export async function GET(request: Request) {
   const limit = Math.min(200, Math.max(1, Number(searchParams.get("limit") ?? 100) || 100));
   let reconciliation: Awaited<ReturnType<typeof reconcileJournalFromBrokerSnapshot>> | null = null;
   let reconciliationError: string | null = null;
-  const connection = searchParams.get("reconcile") === "1" ? await getOandaToken() : null;
-  if (connection?.accountId) {
+  if (searchParams.get("reconcile") === "1") {
     try {
+      const connection = await getOandaToken();
+      if (!connection?.accountId) throw new Error("OANDA is not connected, so broker reconciliation was skipped.");
       const [openTrades, fills] = await Promise.all([
         fetchOandaOpenTrades({ token: connection.token, environment: connection.environment, accountId: connection.accountId }),
         fetchOandaOrderFills({ token: connection.token, environment: connection.environment, accountId: connection.accountId, from: new Date(Date.now() - 180 * 24 * 60 * 60 * 1000) }),
       ]);
-      reconciliation = await reconcileJournalFromBrokerSnapshot({ openTrades, fills, environment: connection.environment });
+      reconciliation = await reconcileJournalFromBrokerSnapshot({ openTrades, fills, environment: connection.environment, accountId: connection.accountId });
     } catch (error) {
       reconciliationError = error instanceof Error ? error.message : "Broker reconciliation failed.";
     }
