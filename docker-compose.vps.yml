@@ -1,0 +1,11 @@
+services:
+  autotrader:
+    build:
+      context: .
+      dockerfile: Dockerfile.autotrader
+    env_file:
+      - .env.autotrader
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+    stop_grace_period: 30s

@@ -68,12 +68,14 @@ async function oandaJson<T>(url: string, token: string): Promise<T> {
 export async function submitOandaMarketOrder(args: {
   token: string; environment: OandaEnvironment; accountId: string; instrument: string;
   units: number; stopLoss?: number | null; takeProfit?: number | null;
+  clientExtensions?: { id?: string; tag?: string; comment?: string };
 }) {
   const host = hostFor(args.environment);
   const body = {
     order: {
       type: "MARKET", instrument: args.instrument, units: String(args.units),
       timeInForce: "FOK", positionFill: "DEFAULT",
+      ...(args.clientExtensions ? { clientExtensions: args.clientExtensions } : {}),
       ...(args.stopLoss ? { stopLossOnFill: { price: args.stopLoss.toFixed(args.instrument.endsWith("JPY") ? 3 : 5), timeInForce: "GTC" } } : {}),
       ...(args.takeProfit ? { takeProfitOnFill: { price: args.takeProfit.toFixed(args.instrument.endsWith("JPY") ? 3 : 5), timeInForce: "GTC" } } : {}),
     },
@@ -85,9 +87,9 @@ export async function submitOandaMarketOrder(args: {
       body: JSON.stringify(body), cache: "no-store",
     });
   } catch { throw new OandaApiError("OANDA could not be reached. Try again shortly.", 502); }
-  const payload = (await response.json().catch(() => ({}))) as { orderFillTransaction?: { id?: string; units?: string }; orderCreateTransaction?: { id?: string }; errorMessage?: string };
+  const payload = (await response.json().catch(() => ({}))) as { orderFillTransaction?: { id?: string; units?: string; tradeOpened?: { tradeID?: string } }; orderCreateTransaction?: { id?: string }; errorMessage?: string };
   if (!response.ok) throw new OandaApiError(payload.errorMessage || `OANDA order failed (${response.status}).`, response.status);
-  return { orderId: payload.orderFillTransaction?.id ?? payload.orderCreateTransaction?.id ?? null, units: payload.orderFillTransaction?.units ?? String(args.units) };
+  return { orderId: payload.orderFillTransaction?.id ?? payload.orderCreateTransaction?.id ?? null, tradeId: payload.orderFillTransaction?.tradeOpened?.tradeID ?? null, units: payload.orderFillTransaction?.units ?? String(args.units) };
 }
 
 export async function closeOandaTrade(args: { token: string; environment: OandaEnvironment; accountId: string; tradeId: string }) {
@@ -199,6 +201,50 @@ export async function fetchOandaOpenTrades(args: { token: string; environment: O
       unrealizedPL: Number(trade.unrealizedPL ?? 0),
       stopLoss: Number.isFinite(Number(trade.stopLossOrder?.price)) ? Number(trade.stopLossOrder?.price) : null,
       takeProfit: Number.isFinite(Number(trade.takeProfitOrder?.price)) ? Number(trade.takeProfitOrder?.price) : null,
+    }];
+  });
+}
+
+type OandaTransactionPayload = {
+  transactions?: Array<{
+    id?: string;
+    type?: string;
+    time?: string;
+    instrument?: string;
+    tradeID?: string;
+    pl?: string;
+    units?: string;
+  }>;
+  errorMessage?: string;
+};
+
+export async function fetchOandaOrderFills(args: {
+  token: string;
+  environment: OandaEnvironment;
+  accountId: string;
+  from: Date;
+  to?: Date;
+}) {
+  const params = new URLSearchParams({
+    from: args.from.toISOString(),
+    to: (args.to ?? new Date()).toISOString(),
+    type: "ORDER_FILL",
+    pageSize: "1000",
+  });
+  const payload = await oandaJson<OandaTransactionPayload>(
+    `https://${hostFor(args.environment)}/v3/accounts/${encodeURIComponent(args.accountId)}/transactions?${params.toString()}`,
+    args.token,
+  );
+  return (payload.transactions ?? []).flatMap((transaction) => {
+    const pnl = Number(transaction.pl ?? 0);
+    if (!transaction.id || !transaction.time || !Number.isFinite(pnl)) return [];
+    return [{
+      id: transaction.id,
+      time: transaction.time,
+      instrument: transaction.instrument ?? null,
+      tradeId: transaction.tradeID ?? null,
+      pnl,
+      units: Number(transaction.units ?? 0),
     }];
   });
 }

@@ -1,4 +1,4 @@
-import type { NormalisedCandle } from "@/lib/oanda-api";
+import type { NormalisedCandle } from "./oanda-api.ts";
 
 export type ScannerResult = {
   instrument: string;

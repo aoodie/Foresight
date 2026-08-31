@@ -13,6 +13,48 @@ Do not commit `.env*` files or broker/API credentials.
 
 For the supported local/runtime commands, see **Diagnostic Commands** below.
 
+## VPS autonomous trader
+
+The repository includes a separate Node worker under `autotrader/`. It runs
+continuously on a VPS, uses the existing OANDA client and multi-timeframe
+scanner, enforces risk and news gates, stores a local SQLite audit trail, and
+optionally synchronises worker events to the hosted dashboard.
+
+### Run with Docker
+
+```bash
+cp deploy/.env.autotrader.example .env.autotrader
+# Edit .env.autotrader and keep AUTOTRADER_ENABLED=false initially.
+docker compose -f docker-compose.vps.yml build
+docker compose -f docker-compose.vps.yml up -d
+docker compose -f docker-compose.vps.yml logs -f autotrader
+```
+
+The worker trades only instruments listed in `AUTOTRADER_INSTRUMENTS`. It
+defaults to the OANDA Practice account. Live execution requires both
+`AUTOTRADER_ALLOW_LIVE=true` and the exact confirmation string documented in
+the example environment file. Set `AUTOTRADER_AUTOCLOSE_ON_LLM_CLOSE=true`
+only after testing the review behaviour on Practice.
+
+The worker does not call the LLM on every price update. It caches reviews and
+only requests a new review after a material price move, a review interval, or
+a released high-impact event. Broker-side stop loss and take profit remain the
+primary protection.
+
+### Run with systemd
+
+Install Node.js 24, run `npm ci`, copy the example environment file to
+`/opt/foresight/.env.autotrader`, then install
+`deploy/foresight-autotrader.service` into `/etc/systemd/system/` and run:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now foresight-autotrader
+sudo journalctl -u foresight-autotrader -f
+```
+
+Never commit `.env.autotrader`; it contains broker and AI credentials.
+
 A clean full-stack starter running on
 [vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
 Drizzle support.
