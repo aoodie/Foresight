@@ -57,6 +57,11 @@ export type EconomicEventStatus = {
   error?: string;
 };
 
+export function isWithinNewsWindow(event: Pick<HighImpactEvent, "phase" | "minutesUntil" | "minutesSince">) {
+  return (event.phase === "before" && event.minutesUntil <= preEventMinutes) ||
+    (event.phase === "after" && event.minutesSince <= postEventMinutes);
+}
+
 function relevantCurrencies(instrument: string) {
   return new Set(currencyMap[instrument] ?? []);
 }
@@ -114,7 +119,7 @@ export async function getEconomicEventStatus(instrument: string, now = new Date(
       .filter((event): event is HighImpactEvent => Boolean(event))
       .filter((event, index, list) => list.findIndex((candidate) => candidate.id === event.id) === index)
       .sort((a, b) => Date.parse(a.date) - Date.parse(b.date));
-    const blockedBy = events.filter((event) => event.minutesUntil <= preEventMinutes || event.minutesSince <= postEventMinutes);
+    const blockedBy = events.filter(isWithinNewsWindow);
     return {
       available: true,
       instrument,
