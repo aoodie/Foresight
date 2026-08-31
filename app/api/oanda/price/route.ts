@@ -1,10 +1,12 @@
 import { NextResponse } from "next/server";
 import { fetchOandaAccountId, fetchOandaPrice, OandaApiError } from "@/lib/oanda-api";
 import { getOandaToken, saveOandaAccountId } from "@/lib/oanda-secret";
+import { isOwnerRequest } from "@/lib/owner-request";
 
 const allowed = new Set(["EUR_USD", "GBP_USD", "USD_JPY", "USD_CHF", "AUD_USD", "NZD_USD", "USD_CAD", "EUR_GBP", "EUR_JPY", "GBP_JPY", "XAU_USD", "US30_USD"]);
 
 export async function GET(request: Request) {
+  if (!(await isOwnerRequest())) return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
   const instrument = new URL(request.url).searchParams.get("instrument") ?? "EUR_USD";
   if (!allowed.has(instrument)) return NextResponse.json({ error: "Unsupported instrument" }, { status: 400 });
   const connection = await getOandaToken();

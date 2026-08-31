@@ -101,6 +101,8 @@ export class WorkerState {
         last_error TEXT,
         delivered_at TEXT
       );
+      CREATE INDEX IF NOT EXISTS worker_journal_broker_trade_id_idx ON worker_journal (broker_trade_id);
+      CREATE INDEX IF NOT EXISTS worker_journal_status_idx ON worker_journal (status, created_at);
     `);
   }
 
@@ -113,6 +115,10 @@ export class WorkerState {
   set(key: string, value: unknown) {
     this.db.prepare("INSERT INTO worker_state (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
       .run(key, JSON.stringify(value), new Date().toISOString());
+  }
+
+  delete(key: string) {
+    this.db.prepare("DELETE FROM worker_state WHERE key = ?").run(key);
   }
 
   event(input: WorkerEvent) {
@@ -146,13 +152,33 @@ export class WorkerState {
     if (notes) mergedMetadata.lastNote = notes;
     if (metadata) Object.assign(mergedMetadata, metadata);
     const now = new Date().toISOString();
-    this.db.prepare("UPDATE worker_journal SET status = ?, pnl = COALESCE(?, pnl), closed_at = CASE WHEN ? IN ('closed', 'cancelled') THEN ? ELSE closed_at END, updated_at = ?, metadata_json = ? WHERE broker_trade_id = ?")
+    this.db.prepare("UPDATE worker_journal SET status = ?, pnl = COALESCE(?, pnl), closed_at = CASE WHEN ? IN ('closed', 'cancelled', 'win', 'loss', 'breakeven') THEN ? ELSE closed_at END, updated_at = ?, metadata_json = ? WHERE broker_trade_id = ?")
       .run(status, pnl ?? null, status, now, now, JSON.stringify(mergedMetadata), brokerTradeId);
   }
 
-  managedOpenTrades(): Array<{ id: string; broker_trade_id: string; instrument: string; status: string }> {
-    return this.db.prepare("SELECT id, broker_trade_id, instrument, status FROM worker_journal WHERE broker_trade_id IS NOT NULL AND status IN ('submitted', 'open')")
-      .all() as Array<{ id: string; broker_trade_id: string; instrument: string; status: string }>;
+  journalUpdateById(id: string, input: { status?: string; brokerTradeId?: string | null; entryPrice?: number | null; pnl?: number | null; notes?: string; metadata?: Record<string, unknown> }) {
+    const existing = this.db.prepare("SELECT metadata_json FROM worker_journal WHERE id = ?").get(id) as { metadata_json?: string | null } | undefined;
+    let mergedMetadata: Record<string, unknown> = {};
+    try { mergedMetadata = existing?.metadata_json ? JSON.parse(existing.metadata_json) : {}; } catch { /* Preserve the new audit data even when old metadata is malformed. */ }
+    if (input.notes) mergedMetadata.lastNote = input.notes;
+    if (input.metadata) Object.assign(mergedMetadata, input.metadata);
+    const now = new Date().toISOString();
+    const terminal = input.status && ["closed", "cancelled", "win", "loss", "breakeven"].includes(input.status) ? now : null;
+    this.db.prepare(`UPDATE worker_journal SET status = COALESCE(?, status), broker_trade_id = COALESCE(?, broker_trade_id),
+      entry_price = COALESCE(?, entry_price), pnl = COALESCE(?, pnl), closed_at = COALESCE(?, closed_at),
+      updated_at = ?, metadata_json = ? WHERE id = ?`)
+      .run(input.status ?? null, input.brokerTradeId ?? null, input.entryPrice ?? null, input.pnl ?? null, terminal, now, JSON.stringify(mergedMetadata), id);
+  }
+
+  managedOpenTrades(): Array<{ id: string; broker_trade_id: string; instrument: string; status: string; created_at: string }> {
+    return this.db.prepare("SELECT id, broker_trade_id, instrument, status, created_at FROM worker_journal WHERE broker_trade_id IS NOT NULL AND status IN ('submitted', 'open')")
+      .all() as Array<{ id: string; broker_trade_id: string; instrument: string; status: string; created_at: string }>;
+  }
+
+  pendingJournals(): Array<{ id: string; instrument: string; created_at: string; metadata: Record<string, unknown> }> {
+    const rows = this.db.prepare("SELECT id, instrument, created_at, metadata_json FROM worker_journal WHERE broker_trade_id IS NULL AND status = 'submitted' ORDER BY created_at ASC")
+      .all() as Array<{ id: string; instrument: string; created_at: string; metadata_json?: string | null }>;
+    return rows.map((row) => ({ id: row.id, instrument: row.instrument, created_at: row.created_at, metadata: this.parseMetadata(row.metadata_json) ?? {} }));
   }
 
   journalRows(): WorkerJournalRow[] {

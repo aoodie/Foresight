@@ -54,7 +54,7 @@ const granularities = ["M5", "M15", "H1", "H4"];
 
 function decimalsFor(instrument: string) {
   if (instrument.endsWith("JPY")) return 3;
-  if (instrument === "XAU_USD") return 2;
+  if (instrument === "XAU_USD") return 3;
   if (instrument === "US30_USD") return 1;
   return 5;
 }
@@ -69,12 +69,12 @@ function moneyText(value: number, currency: string) {
 
 function directionFor(units: number) { return units >= 0 ? "LONG" : "SHORT"; }
 
-function journalMetadata(entry: JournalEntry | null) {
+function journalMetadata(entry: JournalEntry | null | undefined) {
   if (!entry?.metadata_json) return {} as Record<string, unknown>;
   try { return JSON.parse(entry.metadata_json) as Record<string, unknown>; } catch { return {}; }
 }
 
-function closeSummary(entry: JournalEntry | null) {
+function closeSummary(entry: JournalEntry | null | undefined) {
   if (!entry) return null;
   const metadata = journalMetadata(entry);
   const reason = typeof metadata.closeReason === "string"

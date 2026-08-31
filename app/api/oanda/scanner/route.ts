@@ -3,12 +3,14 @@ import { getOandaToken } from "@/lib/oanda-secret";
 import { fetchOandaCandles } from "@/lib/oanda-api";
 import {
   analyseInstrument,
+  candleCountForGranularity,
   combineTimeframes,
   timeframeProfiles,
   type ScannerResult,
   type TimeframeMode,
 } from "@/lib/market-scanner";
 import { writeSystemLog } from "@/lib/trading-records";
+import { isOwnerRequest } from "@/lib/owner-request";
 
 const universe = [
   { instrument: "EUR_USD", label: "EUR / USD", assetClass: "forex" as const },
@@ -26,6 +28,7 @@ const universe = [
 ];
 
 export async function GET(request: Request) {
+  if (!(await isOwnerRequest())) return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
   const startedAt = Date.now();
   const connection = await getOandaToken();
   if (!connection)
@@ -61,7 +64,7 @@ export async function GET(request: Request) {
                     environment: connection.environment,
                     instrument: market.instrument,
                     granularity,
-                    count: 80,
+                    count: candleCountForGranularity(granularity),
                   }),
                 ] as const,
             ),

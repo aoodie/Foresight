@@ -37,7 +37,7 @@ function loadTradingViewLibrary() {
 function unixTime(value: string) { return Math.floor(new Date(value).getTime() / 1000); }
 function decimalsFor(instrument: string) {
   if (instrument.endsWith("JPY")) return 3;
-  if (instrument === "XAU_USD") return 2;
+  if (instrument === "XAU_USD") return 3;
   if (instrument === "US30_USD") return 1;
   return 5;
 }

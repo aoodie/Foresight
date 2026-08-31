@@ -86,7 +86,16 @@ export function isStrategyMarket(value: unknown): value is StrategyMarket {
 export type AiCallResult<T> = { value: T; responseId: string | null; usage: Record<string, unknown> | null; input: unknown; instructions: string };
 
 export async function generateStrategies(apiKey: string, model: string, markets: StrategyMarket[], luxAlgoResearch: unknown, mode: "scalping" | "intraday" | "swing" = "intraday", baseUrl = defaultAiBaseUrl): Promise<AiCallResult<AiStrategy[]>> {
-  const input = { tradingMode: mode, timeframeProfile: mode === "scalping" ? { context: "H1", setup: "M15", trigger: "M5" } : { context: "H4", setup: "H1", trigger: "M15" }, markets, luxAlgoResearch };
+  const input = {
+    tradingMode: mode,
+    timeframeProfile: mode === "scalping"
+      ? { context: "H1", setup: "M15", trigger: "M5" }
+      : mode === "swing"
+        ? { context: "D", setup: "H4", trigger: "H1" }
+        : { context: "H4", setup: "H1", trigger: "M15" },
+    markets,
+    luxAlgoResearch,
+  };
   const response = await fetch(aiEndpoint(baseUrl, "/responses"), {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },

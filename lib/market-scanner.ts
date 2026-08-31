@@ -65,12 +65,18 @@ export const timeframeProfiles: Record<
     frames: ["H4", "H1", "M15"],
   },
   swing: {
-    context: "H4",
-    setup: "H1",
-    trigger: "M15",
-    frames: ["H4", "H1", "M15"],
+    context: "D",
+    setup: "H4",
+    trigger: "H1",
+    frames: ["D", "H4", "H1"],
   },
 };
+
+export function candleCountForGranularity(granularity: string) {
+  if (granularity === "M5") return 300;
+  if (granularity === "M15") return 100;
+  return 80;
+}
 
 function ema(values: number[], period: number) {
   const multiplier = 2 / (period + 1);
@@ -91,6 +97,7 @@ function rsi(values: number[], period = 14) {
     changes.reduce((sum, value) => sum + Math.max(value, 0), 0) / period;
   const losses =
     changes.reduce((sum, value) => sum + Math.max(-value, 0), 0) / period;
+  if (!gains && !losses) return 50;
   if (!losses) return 100;
   return 100 - 100 / (1 + gains / losses);
 }
@@ -115,16 +122,19 @@ export function analyseInstrument(args: {
   assetClass: "forex" | "metal" | "index";
   candles: NormalisedCandle[];
 }): ScannerResult {
-  if (args.candles.length < 55)
-    throw new Error("At least 55 candles are required for scanning.");
   const candles = args.candles.filter((candle) => candle.complete);
+  if (candles.length < 55)
+    throw new Error("At least 55 completed candles are required for scanning.");
   const closes = candles.map((candle) => candle.close);
   const price = closes.at(-1)!;
   const ema20 = ema(closes.slice(-50), 20);
   const ema50 = ema(closes, 50);
   const currentRsi = rsi(closes);
   const currentAtr = atr(candles);
-  const changeBase = closes.at(-7) ?? closes[0];
+  const latestTime = new Date(candles.at(-1)!.time).getTime();
+  const comparisonTime = latestTime - 24 * 60 * 60 * 1000;
+  const comparisonCandle = [...candles].reverse().find((candle) => new Date(candle.time).getTime() <= comparisonTime) ?? candles[0];
+  const changeBase = comparisonCandle.close;
   const change24h = ((price - changeBase) / changeBase) * 100;
   const momentum = currentAtr ? (price - changeBase) / currentAtr : 0;
   const recent = candles.slice(-7);
@@ -134,8 +144,8 @@ export function analyseInstrument(args: {
     high === low ? 50 : ((price - low) / (high - low)) * 100;
 
   let directional = 0;
-  directional += price > ema20 ? 25 : -25;
-  directional += ema20 > ema50 ? 25 : -25;
+  directional += price > ema20 ? 25 : price < ema20 ? -25 : 0;
+  directional += ema20 > ema50 ? 25 : ema20 < ema50 ? -25 : 0;
   directional += Math.max(-25, Math.min(25, momentum * 12));
   directional += Math.max(-15, Math.min(15, (currentRsi - 50) * 0.75));
 
@@ -246,6 +256,8 @@ export function combineTimeframes(args: {
   const profile = timeframeProfiles[args.mode];
   const context =
     args.analyses[profile.context] ?? args.analyses[profile.frames[0]];
+  const trigger =
+    args.analyses[profile.trigger] ?? args.analyses[profile.frames.at(-1)!];
   const alignment = profile.frames.map((timeframe) => ({
     timeframe,
     bias: args.analyses[timeframe]?.bias ?? "neutral",
@@ -264,6 +276,9 @@ export function combineTimeframes(args: {
     alignedBias === "neutral"
       ? Math.max(longCount, shortCount)
       : alignment.filter((item) => item.bias === alignedBias).length;
+  const direction = alignedBias === "long" ? 1 : alignedBias === "short" ? -1 : 0;
+  const triggerAtr = trigger.price * trigger.atrPercent / 100;
+  const stopDistance = triggerAtr * 1.25;
   const result = {
     ...context,
     bias: alignedBias as ScannerResult["bias"],
@@ -276,6 +291,18 @@ export function combineTimeframes(args: {
     timeframeMode: args.mode,
     timeframeAlignment: alignment,
     confirmations,
+    price: trigger.price,
+    change24h: trigger.change24h,
+    rsi: trigger.rsi,
+    atrPercent: trigger.atrPercent,
+    rangePosition: trigger.rangePosition,
+    entry: direction ? trigger.price : null,
+    stopLoss: direction ? trigger.price - direction * stopDistance : null,
+    takeProfit1: direction ? trigger.price + direction * stopDistance * 1.5 : null,
+    takeProfit2: direction ? trigger.price + direction * stopDistance * 2.5 : null,
+    riskReward1: direction ? 1.5 : null,
+    riskReward2: direction ? 2.5 : null,
+    updatedAt: trigger.updatedAt,
   };
   const directionLabel =
     alignedBias === "long"

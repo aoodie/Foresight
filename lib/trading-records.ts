@@ -40,7 +40,18 @@ export async function createJournalEntry(input: JournalRecordInput) {
   const id = input.id ?? crypto.randomUUID();
   const now = new Date().toISOString();
   await runtime.DB.prepare(`INSERT INTO trade_journal (id, created_at, updated_at, environment, account_id, instrument, direction, style, strategy_name, setup_type, status, entry_price, stop_loss, take_profit_1, take_profit_2, units, lots, risk_percent, risk_amount, pnl, broker_trade_id, thesis, evidence, invalidation, notes, opened_at, closed_at, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO NOTHING`).bind(
+    ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at, environment = excluded.environment,
+      account_id = excluded.account_id, instrument = excluded.instrument, direction = excluded.direction,
+      style = excluded.style, strategy_name = excluded.strategy_name, setup_type = excluded.setup_type,
+      status = excluded.status, entry_price = excluded.entry_price, stop_loss = excluded.stop_loss,
+      take_profit_1 = excluded.take_profit_1, take_profit_2 = excluded.take_profit_2,
+      units = excluded.units, lots = COALESCE(excluded.lots, trade_journal.lots),
+      risk_percent = excluded.risk_percent, risk_amount = excluded.risk_amount,
+      pnl = COALESCE(excluded.pnl, trade_journal.pnl), broker_trade_id = COALESCE(excluded.broker_trade_id, trade_journal.broker_trade_id),
+      thesis = COALESCE(excluded.thesis, trade_journal.thesis), evidence = COALESCE(excluded.evidence, trade_journal.evidence),
+      invalidation = COALESCE(excluded.invalidation, trade_journal.invalidation), notes = COALESCE(excluded.notes, trade_journal.notes),
+      opened_at = COALESCE(excluded.opened_at, trade_journal.opened_at), closed_at = COALESCE(excluded.closed_at, trade_journal.closed_at),
+      metadata_json = COALESCE(excluded.metadata_json, trade_journal.metadata_json)`).bind(
     id, now, now, input.environment, input.accountId ?? null, input.instrument, input.direction, input.style,
     input.strategyName ?? null, input.setupType ?? null, input.status ?? "planned", input.entryPrice ?? null,
     input.stopLoss ?? null, input.takeProfit1 ?? null, input.takeProfit2 ?? null, input.units ?? null,
@@ -51,12 +62,12 @@ export async function createJournalEntry(input: JournalRecordInput) {
   return id;
 }
 
-export async function updateJournalEntry(input: { id: string; status?: string; pnl?: number | null; brokerTradeId?: string | null; notes?: string | null; closedAt?: string | null; metadata?: Record<string, unknown>; }) {
+export async function updateJournalEntry(input: { id: string; status?: string; pnl?: number | null; brokerTradeId?: string | null; notes?: string | null; openedAt?: string | null; closedAt?: string | null; metadata?: Record<string, unknown>; }) {
   const now = new Date().toISOString();
   const closedAt = input.closedAt ?? (input.status && ["closed", "cancelled", "win", "loss", "breakeven"].includes(input.status) ? now : null);
   const metadataJson = input.metadata == null ? null : json(input.metadata);
-  const result = await runtime.DB.prepare("UPDATE trade_journal SET status = COALESCE(?, status), pnl = COALESCE(?, pnl), broker_trade_id = COALESCE(?, broker_trade_id), notes = COALESCE(?, notes), closed_at = COALESCE(?, closed_at), metadata_json = CASE WHEN ? IS NULL THEN metadata_json ELSE json_patch(CASE WHEN json_valid(metadata_json) THEN metadata_json ELSE '{}' END, ?) END, updated_at = ? WHERE id = ?")
-    .bind(input.status ?? null, input.pnl ?? null, input.brokerTradeId ?? null, input.notes ?? null, closedAt, metadataJson, metadataJson, now, input.id).run();
+  const result = await runtime.DB.prepare("UPDATE trade_journal SET status = COALESCE(?, status), pnl = COALESCE(?, pnl), broker_trade_id = COALESCE(?, broker_trade_id), notes = COALESCE(?, notes), opened_at = COALESCE(?, opened_at), closed_at = COALESCE(?, closed_at), metadata_json = CASE WHEN ? IS NULL THEN metadata_json ELSE json_patch(CASE WHEN json_valid(metadata_json) THEN metadata_json ELSE '{}' END, ?) END, updated_at = ? WHERE id = ?")
+    .bind(input.status ?? null, input.pnl ?? null, input.brokerTradeId ?? null, input.notes ?? null, input.openedAt ?? null, closedAt, metadataJson, metadataJson, now, input.id).run();
   return Number(result.meta?.changes ?? 0);
 }
 

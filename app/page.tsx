@@ -255,7 +255,7 @@ const instruments = [
 
 function priceDecimals(instrument: string) {
   if (instrument.endsWith("_JPY")) return 3;
-  if (instrument === "XAU_USD") return 2;
+  if (instrument === "XAU_USD") return 3;
   if (instrument === "US30_USD") return 1;
   return 5;
 }
@@ -798,17 +798,29 @@ export default function Home() {
   const planStop = marketAiPlan?.stopLoss ?? marketSetup?.stopLoss ?? null;
   const planTp1 = marketAiPlan?.takeProfit1 ?? marketSetup?.takeProfit1 ?? null;
   const planTp2 = marketAiPlan?.takeProfit2 ?? marketSetup?.takeProfit2 ?? null;
-  const direction = marketSetup?.bias === "short" || marketAiPlan?.verdict === "short" ? "short" : "long";
-  const stopDistance = planEntry !== null && planStop !== null ? Math.abs(planEntry - planStop) : null;
-  const tp1Distance = planEntry !== null && planTp1 !== null ? Math.abs(planTp1 - planEntry) : null;
-  const tp2Distance = planEntry !== null && planTp2 !== null ? Math.abs(planTp2 - planEntry) : null;
+  const direction = marketAiPlan?.verdict === "long" || marketAiPlan?.verdict === "short"
+    ? marketAiPlan.verdict
+    : marketSetup?.bias === "long" || marketSetup?.bias === "short"
+      ? marketSetup.bias
+      : null;
+  const executionEntry = direction === "long" ? quote?.ask ?? planEntry : direction === "short" ? quote?.bid ?? planEntry : null;
+  const stopDistance = executionEntry !== null && planStop !== null ? Math.abs(executionEntry - planStop) : null;
+  const tp1Distance = executionEntry !== null && planTp1 !== null ? Math.abs(planTp1 - executionEntry) : null;
+  const tp2Distance = executionEntry !== null && planTp2 !== null ? Math.abs(planTp2 - executionEntry) : null;
+  const protectedLevelsOrdered = direction === "long"
+    ? planStop !== null && executionEntry !== null && planTp1 !== null && planStop < executionEntry && executionEntry < planTp1
+    : direction === "short"
+      ? planStop !== null && executionEntry !== null && planTp1 !== null && planTp1 < executionEntry && executionEntry < planStop
+      : false;
+  const liveRiskReward = stopDistance && tp1Distance !== null ? tp1Distance / stopDistance : null;
+  const validProtectedPlan = protectedLevelsOrdered && liveRiskReward !== null && liveRiskReward >= 1.5;
   const parsedRiskPercent = Number(riskPercent);
-  const validRiskPercent = Number.isFinite(parsedRiskPercent) && parsedRiskPercent > 0 && parsedRiskPercent <= 5;
+  const validRiskPercent = Number.isFinite(parsedRiskPercent) && parsedRiskPercent > 0 && parsedRiskPercent <= 2;
   const riskAmount = account && validRiskPercent ? account.equity * parsedRiskPercent / 100 : null;
-  const conversion = quote?.homeConversionFactors?.[direction === "short" ? "negativeUnits" : "positiveUnits"] ?? null;
+  const conversion = quote?.homeConversionFactors?.negativeUnits ?? null;
   const cashRiskPerUnit = stopDistance !== null && conversion !== null ? stopDistance * conversion : null;
   const calculatedUnits = riskAmount !== null && cashRiskPerUnit !== null && cashRiskPerUnit > 0
-    ? Math.max(0, Math.floor(riskAmount / cashRiskPerUnit))
+    ? Math.min(1_000_000, Math.max(0, Math.floor(riskAmount / cashRiskPerUnit)))
     : 0;
   const calculatedLots = marketSetup?.assetClass === "forex" ? calculatedUnits / 100000 : null;
   const slPips = stopDistance === null ? null : stopDistance * pipMultiplier(instrument);
@@ -894,7 +906,7 @@ export default function Home() {
   }, [aiConnected, eventStatus, instrument, marketAiPlan, marketSetup, monitoredTrade, quote?.mid, scanMode, scanner?.timeframes]);
 
   const submitOrder = async () => {
-    if (!marketSetup) return;
+    if (!marketSetup || !direction) return;
     if (!eventStatus?.available) {
       setOrderStatus("New orders are blocked until the high-impact news calendar can be verified.");
       return;
@@ -905,6 +917,10 @@ export default function Home() {
     }
     if (!calculatedUnits) {
       setOrderStatus("Waiting for account equity, a valid stop distance and a valid risk percentage.");
+      return;
+    }
+    if (!validProtectedPlan) {
+      setOrderStatus("Order blocked: the stop and TP1 must remain correctly ordered at the live quote with at least 1.5 risk/reward.");
       return;
     }
     setOrderStatus("Submitting order…");
@@ -938,9 +954,10 @@ export default function Home() {
       const payload = await response.json();
       if (!response.ok)
         throw new Error(payload.error || "Order could not be submitted.");
-      setOrderStatus(
-        `${payload.accountEnvironment === "practice" ? "Demo" : "Live"} OANDA order submitted · ${payload.orderId ?? "no ID"}`,
-      );
+      const executionLabel = payload.status === "netted"
+        ? "Order filled by reducing or closing an existing position"
+        : `${payload.accountEnvironment === "practice" ? "Demo" : "Live"} OANDA trade opened`;
+      setOrderStatus(`${executionLabel} · ${payload.tradeId ?? payload.fillTransactionId ?? payload.orderId ?? "broker confirmed"}${payload.journalWarning ? ` · Journal warning: ${payload.journalWarning}` : ""}`);
       if (payload.mode === "live") void refreshTrades();
       setLiveConfirm(false);
     } catch (error) {
@@ -2111,7 +2128,7 @@ export default function Home() {
                             <SelectContent>
                               <SelectItem value="scalping">Scalping · M5 entry</SelectItem>
                               <SelectItem value="intraday">Intraday · M15 entry</SelectItem>
-                              <SelectItem value="swing">Swing · M15 entry</SelectItem>
+                              <SelectItem value="swing">Swing · H1 entry</SelectItem>
                             </SelectContent>
                           </Select>
                           <input
@@ -2127,7 +2144,7 @@ export default function Home() {
                         </div>
                         <p className="mt-3 text-xs text-[#a9bdb6]">
                           {marketSetup
-                            ? `${direction.toUpperCase()} ${marketSetup.instrument} · ${scanMode} · Entry ${formatScannerPrice(marketSetup.instrument, planEntry)} · SL ${formatScannerPrice(marketSetup.instrument, planStop)} · TP1 ${formatScannerPrice(marketSetup.instrument, planTp1)}`
+                            ? `${direction?.toUpperCase() ?? "WAIT"} ${marketSetup.instrument} · ${scanMode} · Live entry ${formatScannerPrice(marketSetup.instrument, executionEntry)} · SL ${formatScannerPrice(marketSetup.instrument, planStop)} · TP1 ${formatScannerPrice(marketSetup.instrument, planTp1)}`
                             : "Run the scanner to prepare an order."}
                         </p>
                         <div className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
@@ -2164,8 +2181,10 @@ export default function Home() {
                           onClick={() => void submitOrder()}
                           disabled={
                             !marketSetup ||
+                            !direction ||
                             !calculatedUnits ||
                             !validRiskPercent ||
+                            !validProtectedPlan ||
                             newsBlocked ||
                             (executionMode === "live" && !liveConfirm)
                           }

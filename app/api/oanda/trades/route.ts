@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
 import { fetchOandaOpenTrades, fetchOandaOrderFills, OandaApiError } from "@/lib/oanda-api";
 import { getOandaToken } from "@/lib/oanda-secret";
+import { isOwnerRequest } from "@/lib/owner-request";
 
 export async function GET() {
+  if (!(await isOwnerRequest())) return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
   const connection = await getOandaToken();
   if (!connection?.accountId) {
     return NextResponse.json({ connected: false, error: "Connect OANDA with an account number first." }, { status: 503 });
