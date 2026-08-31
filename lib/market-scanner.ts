@@ -1,6 +1,9 @@
 import type { NormalisedCandle } from "./oanda-api.ts";
 
+export const STRATEGY_VERSION = "scanner-v1.1.0";
+
 export type ScannerResult = {
+  strategyVersion: string;
   instrument: string;
   label: string;
   assetClass: "forex" | "metal" | "index";
@@ -221,6 +224,7 @@ export function analyseInstrument(args: {
       : "Ignore this idea if a four-hour candle closes firmly against the trend or the short-term trend turns the other way.";
 
   return {
+    strategyVersion: STRATEGY_VERSION,
     instrument: args.instrument,
     label: args.label,
     assetClass: args.assetClass,

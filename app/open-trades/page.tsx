@@ -199,6 +199,7 @@ export default function OpenTradesPage() {
           <NavLink href="/open-trades" active>Open trades</NavLink>
           <NavLink href="/markets">Markets</NavLink>
           <NavLink href="/research">News & events</NavLink>
+          <NavLink href="/validation">Validation</NavLink>
           <NavLink href="/journal">Journal</NavLink>
           <NavLink href="/logs">System logs</NavLink>
         </nav>

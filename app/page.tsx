@@ -156,6 +156,7 @@ type StrategyEvidence = {
   nextStep: string;
 };
 type ScanResult = {
+  strategyVersion: string;
   instrument: string;
   label: string;
   assetClass: "forex" | "metal" | "index";
@@ -947,7 +948,7 @@ export default function Home() {
             thesis: marketAiPlan?.analysis ?? marketSetup.analysis,
             evidence: marketAiPlan?.reasons?.join(" ") ?? marketSetup.reasons.join(" "),
             invalidation: marketAiPlan?.invalidation ?? marketSetup.invalidation,
-            metadata: { score: marketSetup.score, rsi: marketSetup.rsi, atrPercent: marketSetup.atrPercent, timeframeAlignment: marketSetup.timeframeAlignment },
+            metadata: { strategyVersion: marketSetup.strategyVersion, score: marketSetup.score, rsi: marketSetup.rsi, atrPercent: marketSetup.atrPercent, timeframeAlignment: marketSetup.timeframeAlignment },
           },
         }),
       });
@@ -1022,7 +1023,7 @@ export default function Home() {
           </div>
         </div>
         <nav
-          className="order-3 flex w-full gap-1 rounded-xl border border-white/10 bg-black/15 p-1 sm:order-none sm:w-auto"
+          className="order-3 flex w-full flex-wrap gap-1 rounded-xl border border-white/10 bg-black/15 p-1 sm:order-none sm:w-auto"
           aria-label="Primary navigation"
         >
           <NavLink href="/" active={isOverview}>
@@ -1036,6 +1037,9 @@ export default function Home() {
           </NavLink>
           <NavLink href="/research" active={isResearch}>
             News & events
+          </NavLink>
+          <NavLink href="/validation" active={false}>
+            Validation
           </NavLink>
           <NavLink href="/journal" active={false}>
             Journal
