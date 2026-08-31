@@ -54,6 +54,26 @@ test("attaches client extensions to both the OANDA order and resulting trade", a
   }
 });
 
+test("sends pair chat with a fixed research-only role and selected-pair context", async () => {
+  const { askPairAnalyst, pairChatInstructions } = await vite.ssrLoadModule("/lib/pair-chat.ts");
+  const originalFetch = globalThis.fetch;
+  let submittedBody;
+  globalThis.fetch = async (_url, init) => {
+    submittedBody = JSON.parse(String(init.body));
+    return new Response(JSON.stringify({ id: "response-1", output: [{ content: [{ type: "output_text", text: "USD/JPY is ranging near resistance." }] }] }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+  try {
+    const result = await askPairAnalyst({ apiKey: "test", model: "test-model", instrument: "USD_JPY", question: "What is the regime?", messages: [], snapshot: { marketRegime: { type: "ranging" } } });
+    assert.match(result.answer, /ranging/i);
+    assert.equal(submittedBody.instructions, pairChatInstructions);
+    assert.match(submittedBody.instructions, /cannot place, change or close an order/i);
+    const input = JSON.parse(submittedBody.input);
+    assert.equal(input.selectedInstrument, "USD_JPY");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("ranks a strongly trending instrument with an actionable bias", async () => {
   const { analyseInstrument } = await vite.ssrLoadModule("/lib/market-scanner.ts");
   const candles = Array.from({ length: 80 }, (_, index) => {

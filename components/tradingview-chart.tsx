@@ -4,7 +4,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 type Candle = { time: string; open: number; high: number; low: number; close: number; complete: boolean };
 type ChartMarker = { time: string; price: number; kind: "entry" | "close"; label: string; color: string };
-type SeriesApi = { setData(data: Array<Record<string, number>>): void; setMarkers(markers: Array<Record<string, unknown>>): void; createPriceLine(options: Record<string, unknown>): void };
+type ChartLevel = { price: number; color: string; title: string };
+type PriceLineApi = Record<string, unknown>;
+type SeriesApi = { setData(data: Array<Record<string, number>>): void; setMarkers(markers: Array<Record<string, unknown>>): void; createPriceLine(options: Record<string, unknown>): PriceLineApi; removePriceLine(line: PriceLineApi): void };
 type VisibleRange = { from: number; to: number };
 type TimeScaleApi = {
   fitContent(): void;
@@ -68,6 +70,26 @@ function formatChartTime(unix?: number) {
   }).format(new Date(unix * 1000)) + " UTC";
 }
 
+function updateSeriesData(series: SeriesApi, timeScale: TimeScaleApi, candles: Candle[], markers: ChartMarker[], preserveViewport: boolean) {
+  const viewport = preserveViewport ? timeScale.getVisibleRange() : null;
+  const visibleCandles = candles.filter((candle) => candle.complete || candle === candles.at(-1));
+  series.setData(visibleCandles.map((candle) => ({ time: unixTime(candle.time), open: candle.open, high: candle.high, low: candle.low, close: candle.close })));
+  if (visibleCandles.length) {
+    const firstCandle = unixTime(visibleCandles[0].time);
+    const lastCandle = unixTime(visibleCandles.at(-1)!.time);
+    series.setMarkers(markers.filter((marker) => {
+      const time = unixTime(marker.time);
+      return time >= firstCandle && time <= lastCandle;
+    }).map((marker) => ({
+      time: unixTime(marker.time), position: marker.kind === "entry" ? "belowBar" : "aboveBar",
+      color: marker.color, shape: marker.kind === "entry" ? (marker.label === "SHORT ENTRY" ? "arrowDown" : "arrowUp") : "circle", text: marker.label,
+    })));
+  } else {
+    series.setMarkers([]);
+  }
+  if (viewport && viewport.from < viewport.to) timeScale.setVisibleRange(viewport);
+}
+
 export function TradingViewChart({ instrument, granularity, candles, levels, markers, tradeSummary }: {
   instrument: string;
   granularity: string;
@@ -77,6 +99,10 @@ export function TradingViewChart({ instrument, granularity, candles, levels, mar
   tradeSummary?: { status: string; closeReason?: string | null; closeNotes?: string | null };
 }) {
   const container = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<ChartApi | null>(null);
+  const seriesRef = useRef<SeriesApi | null>(null);
+  const priceLinesRef = useRef<PriceLineApi[]>([]);
+  const latestDataRef = useRef<{ candles: Candle[]; markers: ChartMarker[]; levels: ChartLevel[] } | null>(null);
   const [cursorTime, setCursorTime] = useState<number>();
   const decimals = decimalsFor(instrument);
   const chartLevels = useMemo(() => [
@@ -86,10 +112,11 @@ export function TradingViewChart({ instrument, granularity, candles, levels, mar
     { price: levels?.takeProfit2 ?? NaN, color: "#c4b5fd", title: "TP2" },
   ].filter((line) => Number.isFinite(line.price)), [levels?.entry, levels?.stopLoss, levels?.takeProfit1, levels?.takeProfit2]);
   const chartMarkers = useMemo(() => markers?.filter((marker) => Number.isFinite(marker.price) && Number.isFinite(unixTime(marker.time))) ?? [], [markers]);
+  useEffect(() => { latestDataRef.current = { candles: candles ?? [], markers: chartMarkers, levels: chartLevels }; }, [candles, chartLevels, chartMarkers]);
 
   useEffect(() => {
     const host = container.current;
-    if (!host || !candles?.length) return;
+    if (!host) return;
     let chart: ChartApi | null = null;
     let cancelled = false;
     void loadTradingViewLibrary().then((library) => {
@@ -109,18 +136,14 @@ export function TradingViewChart({ instrument, granularity, candles, levels, mar
         wickUpColor: "#a4ffcf", wickDownColor: "#fb7185",
         priceFormat: { type: "price", precision: decimals, minMove: 1 / (10 ** decimals) },
       });
-      series.setData(candles.filter((c) => c.complete || c === candles.at(-1)).map((c) => ({ time: unixTime(c.time), open: c.open, high: c.high, low: c.low, close: c.close })));
-      const firstCandle = unixTime(candles[0].time);
-      const lastCandle = unixTime(candles.at(-1)!.time);
-      series.setMarkers(chartMarkers.filter((marker) => {
-        const time = unixTime(marker.time);
-        return time >= firstCandle && time <= lastCandle;
-      }).map((marker) => ({
-        time: unixTime(marker.time), position: marker.kind === "entry" ? "belowBar" : "aboveBar",
-        color: marker.color, shape: marker.kind === "entry" ? (marker.label === "SHORT ENTRY" ? "arrowDown" : "arrowUp") : "circle", text: marker.label,
-      })));
-      chartLevels.forEach((line) => series.createPriceLine({ price: line.price, color: line.color, lineWidth: 2, lineStyle: 0, axisLabelVisible: true, title: line.title }));
       const timeScale = chart.timeScale();
+      chartRef.current = chart;
+      seriesRef.current = series;
+      const latest = latestDataRef.current;
+      if (latest) {
+        updateSeriesData(series, timeScale, latest.candles, latest.markers, false);
+        priceLinesRef.current = latest.levels.map((line) => series.createPriceLine({ price: line.price, color: line.color, lineWidth: 2, lineStyle: 0, axisLabelVisible: true, title: line.title }));
+      }
       const savedViewport = window.localStorage.getItem(viewportKey(instrument, granularity));
       let restoredViewport = false;
       if (savedViewport) {
@@ -166,9 +189,26 @@ export function TradingViewChart({ instrument, granularity, candles, levels, mar
       resize?.disconnect();
       (host as HTMLDivElement & { __foresightCleanup?: () => void }).__foresightCleanup?.();
       chart?.remove();
+      if (chartRef.current === chart) chartRef.current = null;
+      seriesRef.current = null;
+      priceLinesRef.current = [];
       host.replaceChildren();
     };
-  }, [candles, chartLevels, chartMarkers, decimals, granularity, instrument]);
+  }, [decimals, granularity, instrument]);
+
+  useEffect(() => {
+    const series = seriesRef.current;
+    const chart = chartRef.current;
+    if (!series || !chart) return;
+    updateSeriesData(series, chart.timeScale(), candles ?? [], chartMarkers, true);
+  }, [candles, chartMarkers]);
+
+  useEffect(() => {
+    const series = seriesRef.current;
+    if (!series) return;
+    priceLinesRef.current.forEach((line) => series.removePriceLine(line));
+    priceLinesRef.current = chartLevels.map((line) => series.createPriceLine({ price: line.price, color: line.color, lineWidth: 2, lineStyle: 0, axisLabelVisible: true, title: line.title }));
+  }, [chartLevels]);
 
   const format = (value?: number | null) => value == null ? "—" : value.toFixed(decimals);
   return (

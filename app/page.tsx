@@ -34,6 +34,7 @@ import {
 } from "@/components/ui/select";
 import { TradingViewChart } from "@/components/tradingview-chart";
 import { EconomicCalendar, PairNews } from "@/components/tradingview-context";
+import { PairLlmChat } from "@/components/pair-llm-chat";
 
 type Candle = {
   time: string;
@@ -894,6 +895,20 @@ export default function Home() {
   const totalUnrealizedPL = openTrades.reduce((total, trade) => total + trade.unrealizedPL, 0);
   const currentEventStatus = eventStatus?.instrument === instrument ? eventStatus : null;
   const newsBlocked = !currentEventStatus || !currentEventStatus.available || currentEventStatus.blocked;
+  const pairChatSnapshot: Record<string, unknown> = {
+    instrument,
+    granularity,
+    tradingMode: scanMode,
+    quote: quote ? { bid: quote.bid, ask: quote.ask, mid: quote.mid, spread: quote.spread, time: quote.time, marketStatus: quote.marketStatus } : null,
+    timeframeProfile: scanner?.timeframes ?? null,
+    scanner: marketSetup ? { strategyVersion: marketSetup.strategyVersion, bias: marketSetup.bias, score: marketSetup.score, rsi: marketSetup.rsi, atrPercent: marketSetup.atrPercent, marketRegime: marketSetup.marketRegime, analysis: marketSetup.analysis, reasons: marketSetup.reasons, invalidation: marketSetup.invalidation, supportResistance: marketSetup.supportResistance, selectedStrategy: marketSetup.selectedStrategy, timeframeAlignment: marketSetup.timeframeAlignment } : null,
+    llmPlan: marketAiPlan ?? null,
+    plannedLevels: { entry: planEntry, stopLoss: planStop, takeProfit1: planTp1, takeProfit2: planTp2, riskReward1: liveRiskReward },
+    openTrade: monitoredTrade,
+    eventRisk: currentEventStatus ? { available: currentEventStatus.available, blocked: currentEventStatus.blocked, nextEvent: currentEventStatus.nextEvent, recentEvents: currentEventStatus.events.slice(0, 6) } : null,
+    recentCompletedCandles: (data?.candles ?? []).filter((candle) => candle.complete).slice(-12),
+    snapshotAt: quote?.time ?? data?.lastUpdated ?? null,
+  };
 
   useEffect(() => {
     if (!monitoredTrade || !marketSetup || !aiConnected || reviewBusy.current) return;
@@ -2527,14 +2542,17 @@ export default function Home() {
                   indicators and drawing tools
                 </div>
               </div>
-              <TradingViewChart
-                instrument={instrument}
-                granularity={granularity}
-                candles={data?.candles}
-                levels={chartLevels}
-                markers={chartMarkers}
-                tradeSummary={chartJournal ? { status: chartJournal.status === "closed" ? "CLOSED" : "EXECUTED", closeReason: chartClose?.reason, closeNotes: chartClose?.notes } : undefined}
-              />
+              <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_380px]">
+                <TradingViewChart
+                  instrument={instrument}
+                  granularity={granularity}
+                  candles={data?.candles}
+                  levels={chartLevels}
+                  markers={chartMarkers}
+                  tradeSummary={chartJournal ? { status: chartJournal.status === "closed" ? "CLOSED" : "EXECUTED", closeReason: chartClose?.reason, closeNotes: chartClose?.notes } : undefined}
+                />
+                <PairLlmChat key={instrument} instrument={instrument} connected={aiConnected} snapshot={pairChatSnapshot} />
+              </div>
               <p className="mt-3 text-[11px] leading-5 text-[#71887f]">
                 Candles are fetched from OANDA and rendered with TradingView
                 Lightweight Charts. Executed entry, stop loss, take-profit and
