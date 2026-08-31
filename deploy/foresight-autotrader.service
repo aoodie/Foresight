@@ -1,0 +1,21 @@
+[Unit]
+Description=Foresight FX autonomous OANDA trader
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/foresight
+EnvironmentFile=/opt/foresight/.env.autotrader
+ExecStart=/usr/bin/node --experimental-strip-types --experimental-transform-types --no-warnings /opt/foresight/autotrader/index.ts
+Restart=always
+RestartSec=10
+KillSignal=SIGTERM
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/foresight/data
+
+[Install]
+WantedBy=multi-user.target

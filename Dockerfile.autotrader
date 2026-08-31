@@ -1,0 +1,12 @@
+FROM node:24-bookworm-slim
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts
+
+COPY lib ./lib
+COPY autotrader ./autotrader
+
+ENV NODE_ENV=production
+CMD ["node", "--experimental-strip-types", "--experimental-transform-types", "--no-warnings", "autotrader/index.ts"]
