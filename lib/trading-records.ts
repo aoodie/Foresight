@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { foresightTradeSource } from "./trade-monitoring";
 import { standardLots } from "./trade-risk";
+import { missingJournalRecordsFromFills, type JournalRecoveryFill } from "./journal-recovery";
 
 type RuntimeEnv = { DB: D1Database };
 const runtime = env as unknown as RuntimeEnv;
@@ -116,12 +117,19 @@ type BrokerSnapshotTrade = {
 type BrokerSnapshotFill = {
   id: string;
   time: string;
+  instrument: string | null;
   tradeIds: string[];
   pnl: number;
   pnlByTradeId?: Record<string, number>;
+  units: number;
   price: number | null;
   closeReason: string | null;
+  isEntry: boolean;
   isClose: boolean;
+  openedTradeId?: string | null;
+  clientId?: string | null;
+  clientTag?: string | null;
+  clientComment?: string | null;
 };
 
 function parsedMetadata(value: unknown) {
@@ -143,6 +151,25 @@ export async function reconcileJournalFromBrokerSnapshot(input: {
   const knownRows = await runtime.DB.prepare("SELECT broker_trade_id FROM trade_journal WHERE broker_trade_id IS NOT NULL LIMIT 1000").all<{ broker_trade_id: string }>();
   const knownBrokerIds = new Set((knownRows.results ?? []).map((row) => row.broker_trade_id));
   let importedUpdates = 0;
+  const recoveredFromFills = missingJournalRecordsFromFills({
+    openTrades: input.openTrades,
+    fills: input.fills satisfies JournalRecoveryFill[],
+    knownBrokerIds,
+    environment: input.environment,
+    accountId: input.accountId,
+  });
+  for (const recovered of recoveredFromFills) {
+    await createJournalEntry(recovered);
+    await writeSystemLog({
+      category: "reconciliation",
+      event: "trade.missing_imported_from_fills",
+      message: `${recovered.instrument}: ${recovered.notes}`,
+      instrument: recovered.instrument,
+      environment: input.environment,
+      details: { journalId: recovered.id, brokerTradeId: recovered.brokerTradeId, status: recovered.status },
+    });
+    importedUpdates += 1;
+  }
   for (const trade of input.openTrades) {
     const source = foresightTradeSource(trade.clientTag);
     if (!source || knownBrokerIds.has(trade.id)) continue;

@@ -15,7 +15,7 @@ export async function GET() {
       fetchOandaOpenTrades({ token: connection.token, environment: connection.environment, accountId: connection.accountId }),
       fetchOandaOrderFills({ token: connection.token, environment: connection.environment, accountId: connection.accountId, from: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) }),
     ]);
-    const reconciliation = await reconcileJournalFromBrokerSnapshot({ openTrades: trades, fills, environment: connection.environment });
+    const reconciliation = await reconcileJournalFromBrokerSnapshot({ openTrades: trades, fills, environment: connection.environment, accountId: connection.accountId });
     return NextResponse.json({ connected: true, environment: connection.environment, trades, fills, reconciliation, checkedAt: new Date().toISOString() });
   } catch (error) {
     const status = error instanceof OandaApiError ? error.status : 500;

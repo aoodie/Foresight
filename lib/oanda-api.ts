@@ -278,6 +278,8 @@ export async function fetchOandaTradeDetails(args: { token: string; environment:
 }
 
 type OandaTransactionPayload = {
+  count?: number;
+  pages?: string[];
   transactions?: Array<{
     id?: string;
     type?: string;
@@ -289,7 +291,12 @@ type OandaTransactionPayload = {
     units?: string;
     price?: string;
     reason?: string;
-    tradeOpened?: { tradeID?: string };
+    tradeOpened?: {
+      tradeID?: string;
+      units?: string;
+      price?: string;
+      clientExtensions?: { id?: string; tag?: string; comment?: string };
+    };
     tradeReduced?: { tradeID?: string; realizedPL?: string };
     tradeClosed?: { tradeID?: string; realizedPL?: string };
     tradesClosed?: Array<{ tradeID?: string; realizedPL?: string }>;
@@ -306,6 +313,50 @@ function closeReasonFor(reason: string | null) {
   return reason ? reason.replaceAll("_", " ").toLowerCase() : "Closed order";
 }
 
+export function normaliseOandaOrderFills(transactions: NonNullable<OandaTransactionPayload["transactions"]>) {
+  return transactions.flatMap((transaction) => {
+    const pnl = Number(transaction.pl ?? 0);
+    if (!transaction.id || !transaction.time || !Number.isFinite(pnl)) return [];
+    const openedTradeId = transaction.tradeOpened?.tradeID ?? null;
+    const tradeIds = [...new Set([
+      transaction.tradeID,
+      openedTradeId,
+      transaction.tradeReduced?.tradeID,
+      transaction.tradeClosed?.tradeID,
+      ...(transaction.tradesClosed ?? []).map((trade) => trade.tradeID),
+    ].filter((value): value is string => Boolean(value)))];
+    const isEntry = Boolean(openedTradeId);
+    const isClose = Boolean(transaction.tradeReduced?.tradeID || transaction.tradeClosed?.tradeID || transaction.tradesClosed?.length);
+    const reason = transaction.reason ?? null;
+    const price = Number(transaction.price ?? transaction.tradeOpened?.price);
+    const units = Number(transaction.tradeOpened?.units ?? transaction.units ?? 0);
+    const pnlByTradeId: Record<string, number> = {};
+    if (transaction.tradeReduced?.tradeID) pnlByTradeId[transaction.tradeReduced.tradeID] = Number(transaction.tradeReduced.realizedPL ?? 0);
+    if (transaction.tradeClosed?.tradeID) pnlByTradeId[transaction.tradeClosed.tradeID] = Number(transaction.tradeClosed.realizedPL ?? 0);
+    for (const trade of transaction.tradesClosed ?? []) if (trade.tradeID) pnlByTradeId[trade.tradeID] = Number(trade.realizedPL ?? 0);
+    for (const [tradeId, value] of Object.entries(pnlByTradeId)) if (!Number.isFinite(value)) delete pnlByTradeId[tradeId];
+    return [{
+      id: transaction.id,
+      time: transaction.time,
+      instrument: transaction.instrument ?? null,
+      tradeId: tradeIds[0] ?? null,
+      openedTradeId,
+      tradeIds,
+      pnlByTradeId,
+      pnl,
+      units: Number.isFinite(units) ? units : 0,
+      price: Number.isFinite(price) ? price : null,
+      reason,
+      closeReason: isClose ? closeReasonFor(reason) : null,
+      isEntry,
+      isClose,
+      clientId: transaction.tradeOpened?.clientExtensions?.id ?? null,
+      clientTag: transaction.tradeOpened?.clientExtensions?.tag ?? null,
+      clientComment: transaction.tradeOpened?.clientExtensions?.comment ?? null,
+    }];
+  });
+}
+
 export async function fetchOandaOrderFills(args: {
   token: string;
   environment: OandaEnvironment;
@@ -319,45 +370,29 @@ export async function fetchOandaOrderFills(args: {
     type: "ORDER_FILL",
     pageSize: "1000",
   });
+  const host = hostFor(args.environment);
   const payload = await oandaJson<OandaTransactionPayload>(
     `https://${hostFor(args.environment)}/v3/accounts/${encodeURIComponent(args.accountId)}/transactions?${params.toString()}`,
     args.token,
   );
-  return (payload.transactions ?? []).flatMap((transaction) => {
-    const pnl = Number(transaction.pl ?? 0);
-    if (!transaction.id || !transaction.time || !Number.isFinite(pnl)) return [];
-    const tradeIds = [...new Set([
-      transaction.tradeID,
-      transaction.tradeOpened?.tradeID,
-      transaction.tradeReduced?.tradeID,
-      transaction.tradeClosed?.tradeID,
-      ...(transaction.tradesClosed ?? []).map((trade) => trade.tradeID),
-    ].filter((value): value is string => Boolean(value)))];
-    const isEntry = Boolean(transaction.tradeOpened?.tradeID);
-    const isClose = Boolean(transaction.tradeReduced?.tradeID || transaction.tradeClosed?.tradeID || transaction.tradesClosed?.length);
-    const reason = transaction.reason ?? null;
-    const price = Number(transaction.price);
-    const pnlByTradeId: Record<string, number> = {};
-    if (transaction.tradeReduced?.tradeID) pnlByTradeId[transaction.tradeReduced.tradeID] = Number(transaction.tradeReduced.realizedPL ?? 0);
-    if (transaction.tradeClosed?.tradeID) pnlByTradeId[transaction.tradeClosed.tradeID] = Number(transaction.tradeClosed.realizedPL ?? 0);
-    for (const trade of transaction.tradesClosed ?? []) if (trade.tradeID) pnlByTradeId[trade.tradeID] = Number(trade.realizedPL ?? 0);
-    for (const [tradeId, value] of Object.entries(pnlByTradeId)) if (!Number.isFinite(value)) delete pnlByTradeId[tradeId];
-    return [{
-      id: transaction.id,
-      time: transaction.time,
-      instrument: transaction.instrument ?? null,
-      tradeId: tradeIds[0] ?? null,
-      tradeIds,
-      pnlByTradeId,
-      pnl,
-      units: Number(transaction.units ?? 0),
-      price: Number.isFinite(price) ? price : null,
-      reason,
-      closeReason: isClose ? closeReasonFor(reason) : null,
-      isEntry,
-      isClose,
-    }];
-  });
+  const pages = payload.pages ?? [];
+  if (pages.length > 50) throw new OandaApiError("OANDA transaction history is too large to reconcile safely in one request.", 413);
+  const pagePayloads: OandaTransactionPayload[] = [];
+  for (const page of pages) {
+    let url: URL;
+    try { url = new URL(page); } catch { throw new OandaApiError("OANDA returned an invalid transaction page URL.", 502); }
+    const expectedPrefix = `/v3/accounts/${encodeURIComponent(args.accountId)}/transactions/idrange`;
+    if (url.protocol !== "https:" || url.hostname !== host || url.pathname !== expectedPrefix) {
+      throw new OandaApiError("OANDA returned an unexpected transaction page URL.", 502);
+    }
+    url.searchParams.set("type", "ORDER_FILL");
+    pagePayloads.push(await oandaJson<OandaTransactionPayload>(url.toString(), args.token));
+  }
+  const transactions = [
+    ...(payload.transactions ?? []),
+    ...pagePayloads.flatMap((page) => page.transactions ?? []),
+  ];
+  return normaliseOandaOrderFills(transactions);
 }
 
 export function normaliseOandaPayload(payload: OandaCandlePayload) {

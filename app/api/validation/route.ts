@@ -33,8 +33,8 @@ export async function GET() {
       fetchOandaOpenTrades({ token: connection.token, environment: connection.environment, accountId: connection.accountId }),
       fetchOandaAccountSummary({ token: connection.token, environment: connection.environment, accountId: connection.accountId }),
     ]);
-    const reconciliation = await reconcileJournalFromBrokerSnapshot({ openTrades, fills, environment: connection.environment });
-    if (reconciliation.activityUpdates || reconciliation.closedUpdates) journal = await loadJournal();
+    const reconciliation = await reconcileJournalFromBrokerSnapshot({ openTrades, fills, environment: connection.environment, accountId: connection.accountId });
+    if (reconciliation.importedUpdates || reconciliation.activityUpdates || reconciliation.closedUpdates) journal = await loadJournal();
     return NextResponse.json({
       connected: true,
       reconciliation,

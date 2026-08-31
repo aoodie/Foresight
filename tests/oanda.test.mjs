@@ -54,6 +54,30 @@ test("attaches client extensions to both the OANDA order and resulting trade", a
   }
 });
 
+test("follows OANDA transaction pages and preserves tagged entry fills", async () => {
+  const { fetchOandaOrderFills } = await vite.ssrLoadModule("/lib/oanda-api.ts");
+  const originalFetch = globalThis.fetch;
+  const requested = [];
+  globalThis.fetch = async (url) => {
+    requested.push(String(url));
+    if (String(url).includes("/transactions?")) {
+      return new Response(JSON.stringify({ count: 1, pages: ["https://api-fxpractice.oanda.com/v3/accounts/account/transactions/idrange?from=10&to=20"] }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    return new Response(JSON.stringify({ transactions: [{ id: "11", time: "2026-08-31T08:00:00.000Z", instrument: "EUR_USD", units: "1000", price: "1.1", pl: "0", reason: "MARKET_ORDER", tradeOpened: { tradeID: "12", units: "1000", price: "1.1", clientExtensions: { id: "foresight-test", tag: "foresight-autotrader", comment: "intraday:daily" } } }] }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+  try {
+    const fills = await fetchOandaOrderFills({ token: "test", environment: "practice", accountId: "account", from: new Date("2026-08-01T00:00:00.000Z") });
+    assert.equal(requested.length, 2);
+    assert.match(requested[1], /type=ORDER_FILL/);
+    assert.equal(fills.length, 1);
+    assert.equal(fills[0].openedTradeId, "12");
+    assert.equal(fills[0].clientTag, "foresight-autotrader");
+    assert.equal(fills[0].clientId, "foresight-test");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("sends pair chat with a fixed research-only role and selected-pair context", async () => {
   const { askPairAnalyst, pairChatInstructions } = await vite.ssrLoadModule("/lib/pair-chat.ts");
   const originalFetch = globalThis.fetch;
