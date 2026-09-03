@@ -25,3 +25,10 @@ test("dashboard trades require a separate automatic-close permission", async () 
   assert.equal(canAutoCloseReviewedTrade({ source: "dashboard_manual", autoCloseAutonomous: true, autoCloseDashboardManual: true }), true);
   assert.equal(canAutoCloseReviewedTrade({ source: "dashboard_manual", autoCloseAutonomous: false, autoCloseDashboardManual: true }), false);
 });
+
+test("infers trade source from OANDA historical client order IDs", async () => {
+  const { foresightTradeSource } = await vite.ssrLoadModule("/lib/trade-monitoring.ts");
+  assert.equal(foresightTradeSource(null, "foresight-abcd"), "autonomous");
+  assert.equal(foresightTradeSource(null, "foresight-ui-abcd"), "dashboard_manual");
+  assert.equal(foresightTradeSource(null, "other-client"), null);
+});

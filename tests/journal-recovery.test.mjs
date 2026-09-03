@@ -32,3 +32,14 @@ test("recovers untagged account trades but still ignores known trade IDs", async
   assert.equal(records[0].metadata.recoverySource, "broker_entry_fill");
   assert.deepEqual(missingJournalRecordsFromFills({ openTrades: [], fills: [{ ...base, clientTag: "foresight-manual" }], knownBrokerIds: new Set(["2"]), environment: "practice" }), []);
 });
+
+test("attributes historical fills from their OANDA client order ID", async () => {
+  const { missingJournalRecordsFromFills } = await vite.ssrLoadModule("/lib/journal-recovery.ts");
+  const autonomous = { id: "201", time: "2026-09-03T00:00:00.000Z", instrument: "GBP_USD", openedTradeId: "202", tradeIds: ["202"], pnl: 0, units: -25000, price: 1.35, closeReason: null, isEntry: true, isClose: false, clientId: "foresight-a1b2c3" };
+  const dashboard = { ...autonomous, id: "203", openedTradeId: "204", tradeIds: ["204"], clientId: "foresight-ui-journal-record" };
+  const records = missingJournalRecordsFromFills({ openTrades: [], fills: [autonomous, dashboard], knownBrokerIds: new Set(), environment: "practice" });
+  assert.equal(records[0].strategyName, "Autotrader recovery");
+  assert.equal(records[0].metadata.source, "autonomous");
+  assert.equal(records[1].strategyName, "Dashboard trade recovery");
+  assert.equal(records[1].metadata.source, "dashboard_manual");
+});

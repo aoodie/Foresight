@@ -39,6 +39,84 @@ function json(value: unknown) {
   return value == null ? null : JSON.stringify(value);
 }
 
+function eventTypeFor(status: string, metadata: Record<string, unknown>) {
+  if (["closed", "win", "loss", "breakeven"].includes(status)) return "trade.closed";
+  if (status === "cancelled") return "order.cancelled";
+  if (status === "reconciliation_required") return "trade.reconciliation_required";
+  if (status === "open") {
+    if (metadata.lastBrokerActivityAt || metadata.lastLlmReview) return "trade.managed";
+    return "trade.opened";
+  }
+  if (status === "submitted") return "order.submitted";
+  return "signal.generated";
+}
+
+async function appendJournalEvent(input: {
+  journalId: string;
+  brokerTradeId?: string | null;
+  status: string;
+  price?: number | null;
+  pnl?: number | null;
+  reason?: string | null;
+  eventAt?: string | null;
+  metadata?: Record<string, unknown>;
+}) {
+  const metadata = input.metadata ?? {};
+  const eventType = eventTypeFor(input.status, metadata);
+  const eventAt = input.eventAt
+    ?? (typeof metadata.closeTime === "string" ? metadata.closeTime : null)
+    ?? (typeof metadata.lastBrokerActivityAt === "string" ? metadata.lastBrokerActivityAt : null)
+    ?? (typeof metadata.fillTime === "string" ? metadata.fillTime : null)
+    ?? new Date().toISOString();
+  const transactionId = typeof metadata.closeTransactionId === "string" ? metadata.closeTransactionId
+    : typeof metadata.entryTransactionId === "string" ? metadata.entryTransactionId
+    : typeof metadata.fillTransactionId === "string" ? metadata.fillTransactionId
+    : "";
+  const eventKey = [input.journalId, eventType, input.brokerTradeId ?? "", transactionId, eventAt].join(":");
+  const source = metadata.recoveredFromBroker || metadata.reconciledAt ? "broker_reconciliation"
+    : metadata.lastLlmReview ? "llm_monitor"
+    : "application";
+  await runtime.DB.prepare("INSERT OR IGNORE INTO trade_journal_events (id, event_key, journal_id, broker_trade_id, event_type, event_at, source, status, price, pnl, reason, metadata_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .bind(crypto.randomUUID(), eventKey, input.journalId, input.brokerTradeId ?? null, eventType, eventAt, source, input.status, input.price ?? null, input.pnl ?? null, input.reason ?? null, json(metadata), new Date().toISOString()).run();
+}
+
+async function appendCurrentJournalEvent(id: string, metadata?: Record<string, unknown>) {
+  const row = await runtime.DB.prepare("SELECT id, broker_trade_id, status, entry_price, pnl, opened_at, closed_at, notes, metadata_json FROM trade_journal WHERE id = ?")
+    .bind(id).first<{ id: string; broker_trade_id: string | null; status: string; entry_price: number | null; pnl: number | null; opened_at: string | null; closed_at: string | null; notes: string | null; metadata_json: string | null }>();
+  if (!row) return;
+  const mergedMetadata = { ...parsedMetadata(row.metadata_json), ...(metadata ?? {}) };
+  const closePrice = typeof mergedMetadata.closePrice === "number" ? mergedMetadata.closePrice : null;
+  const managedAt = typeof mergedMetadata.lastBrokerActivityAt === "string" ? mergedMetadata.lastBrokerActivityAt
+    : typeof mergedMetadata.lastLlmReview === "object" && mergedMetadata.lastLlmReview && "reviewedAt" in mergedMetadata.lastLlmReview && typeof mergedMetadata.lastLlmReview.reviewedAt === "string"
+      ? mergedMetadata.lastLlmReview.reviewedAt
+      : null;
+  await appendJournalEvent({
+    journalId: row.id,
+    brokerTradeId: row.broker_trade_id,
+    status: row.status,
+    price: row.status === "open" ? row.entry_price : closePrice,
+    pnl: row.pnl,
+    reason: typeof mergedMetadata.closeReason === "string" ? mergedMetadata.closeReason : row.notes,
+    eventAt: row.closed_at ?? managedAt ?? row.opened_at,
+    metadata: mergedMetadata,
+  });
+}
+
+async function appendHistoricalOpenEvent(id: string) {
+  const row = await runtime.DB.prepare("SELECT id, broker_trade_id, status, entry_price, opened_at, metadata_json FROM trade_journal WHERE id = ?")
+    .bind(id).first<{ id: string; broker_trade_id: string | null; status: string; entry_price: number | null; opened_at: string | null; metadata_json: string | null }>();
+  if (!row?.opened_at || !["closed", "win", "loss", "breakeven"].includes(row.status)) return;
+  const metadata = parsedMetadata(row.metadata_json);
+  delete metadata.closeReason;
+  delete metadata.closePrice;
+  delete metadata.closeTransactionId;
+  delete metadata.closeTime;
+  delete metadata.reconciledAt;
+  delete metadata.lastBrokerActivityAt;
+  delete metadata.lastLlmReview;
+  await appendJournalEvent({ journalId: row.id, brokerTradeId: row.broker_trade_id, status: "open", price: row.entry_price, eventAt: row.opened_at, reason: "Trade opened at OANDA.", metadata });
+}
+
 export async function createJournalEntry(input: JournalRecordInput) {
   const id = input.id ?? crypto.randomUUID();
   const now = new Date().toISOString();
@@ -63,6 +141,8 @@ export async function createJournalEntry(input: JournalRecordInput) {
     input.brokerTradeId ?? null, input.thesis ?? null, input.evidence ?? null, input.invalidation ?? null,
     input.notes ?? null, input.openedAt ?? null, input.closedAt ?? null, json(input.metadata),
   ).run();
+  await appendCurrentJournalEvent(id, input.metadata && typeof input.metadata === "object" ? input.metadata as Record<string, unknown> : undefined);
+  if (input.closedAt && input.openedAt) await appendHistoricalOpenEvent(id);
   return id;
 }
 
@@ -72,7 +152,9 @@ export async function updateJournalEntry(input: { id: string; status?: string; p
   const metadataJson = input.metadata == null ? null : json(input.metadata);
   const result = await runtime.DB.prepare("UPDATE trade_journal SET status = CASE WHEN status IN ('closed', 'cancelled', 'win', 'loss', 'breakeven') AND ? IN ('planned', 'submitted', 'open', 'reconciliation_required') THEN status ELSE COALESCE(?, status) END, pnl = COALESCE(?, pnl), broker_trade_id = COALESCE(?, broker_trade_id), notes = COALESCE(?, notes), opened_at = COALESCE(?, opened_at), closed_at = COALESCE(?, closed_at), metadata_json = CASE WHEN ? IS NULL THEN metadata_json ELSE json_patch(CASE WHEN json_valid(metadata_json) THEN metadata_json ELSE '{}' END, ?) END, updated_at = ? WHERE id = ?")
     .bind(input.status ?? null, input.status ?? null, input.pnl ?? null, input.brokerTradeId ?? null, input.notes ?? null, input.openedAt ?? null, closedAt, metadataJson, metadataJson, now, input.id).run();
-  return Number(result.meta?.changes ?? 0);
+  const changes = Number(result.meta?.changes ?? 0);
+  if (changes) await appendCurrentJournalEvent(input.id, input.metadata);
+  return changes;
 }
 
 export async function updateJournalByBrokerTradeId(input: { brokerTradeId: string; status: string; pnl?: number | null; notes?: string | null; closedAt?: string | null; metadata?: Record<string, unknown> }) {
@@ -81,7 +163,27 @@ export async function updateJournalByBrokerTradeId(input: { brokerTradeId: strin
   const metadataJson = input.metadata == null ? null : json(input.metadata);
   const result = await runtime.DB.prepare("UPDATE trade_journal SET status = CASE WHEN status IN ('closed', 'cancelled', 'win', 'loss', 'breakeven') AND ? IN ('planned', 'submitted', 'open', 'reconciliation_required') THEN status ELSE ? END, pnl = COALESCE(?, pnl), notes = COALESCE(?, notes), closed_at = COALESCE(?, closed_at), metadata_json = CASE WHEN ? IS NULL THEN metadata_json ELSE json_patch(CASE WHEN json_valid(metadata_json) THEN metadata_json ELSE '{}' END, ?) END, updated_at = ? WHERE broker_trade_id = ?")
     .bind(input.status, input.status, input.pnl ?? null, input.notes ?? null, closedAt, metadataJson, metadataJson, now, input.brokerTradeId).run();
-  return Number(result.meta?.changes ?? 0);
+  const changes = Number(result.meta?.changes ?? 0);
+  if (changes) {
+    const row = await runtime.DB.prepare("SELECT id FROM trade_journal WHERE broker_trade_id = ? ORDER BY created_at ASC LIMIT 1").bind(input.brokerTradeId).first<{ id: string }>();
+    if (row) await appendCurrentJournalEvent(row.id, input.metadata);
+  }
+  return changes;
+}
+
+async function enrichRecoveredJournal(input: {
+  id: string;
+  source: "autonomous" | "dashboard_manual";
+  clientId?: string | null;
+  clientTag?: string | null;
+  clientComment?: string | null;
+}) {
+  const strategyName = input.source === "autonomous" ? "Autotrader recovery" : "Dashboard trade recovery";
+  const metadata = { source: input.source, clientId: input.clientId ?? null, clientTag: input.clientTag ?? null, clientComment: input.clientComment ?? null };
+  const metadataJson = json(metadata);
+  const result = await runtime.DB.prepare("UPDATE trade_journal SET strategy_name = CASE WHEN strategy_name = 'OANDA broker import' THEN ? ELSE strategy_name END, style = COALESCE(?, style), metadata_json = json_patch(CASE WHEN json_valid(metadata_json) THEN metadata_json ELSE '{}' END, ?), updated_at = ? WHERE id = ? AND (strategy_name = 'OANDA broker import' OR COALESCE(json_extract(metadata_json, '$.source'), '') != ? OR COALESCE(json_extract(metadata_json, '$.clientId'), '') != ?)")
+    .bind(strategyName, input.clientComment ?? null, metadataJson, new Date().toISOString(), input.id, input.source, input.clientId ?? "").run();
+  if (Number(result.meta?.changes ?? 0)) await appendCurrentJournalEvent(input.id, { ...metadata, lastBrokerActivityAt: new Date().toISOString() });
 }
 
 export async function writeSystemLog(input: {
@@ -99,6 +201,16 @@ export async function writeSystemLog(input: {
   await runtime.DB.prepare("INSERT INTO system_logs (id, created_at, level, category, event, message, instrument, environment, correlation_id, duration_ms, details_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
     .bind(id, new Date().toISOString(), input.level ?? "info", input.category, input.event, input.message, input.instrument ?? null, input.environment ?? null, input.correlationId ?? null, input.durationMs ?? null, json(input.details)).run();
   return id;
+}
+
+export async function backfillJournalLifecycleEvents(limit = 200) {
+  const rows = await runtime.DB.prepare("SELECT j.id FROM trade_journal j WHERE NOT EXISTS (SELECT 1 FROM trade_journal_events e WHERE e.journal_id = j.id) ORDER BY j.created_at ASC LIMIT ?")
+    .bind(Math.min(500, Math.max(1, limit))).all<{ id: string }>();
+  for (const row of rows.results ?? []) {
+    await appendCurrentJournalEvent(row.id);
+    await appendHistoricalOpenEvent(row.id);
+  }
+  return rows.results?.length ?? 0;
 }
 
 type BrokerSnapshotTrade = {
@@ -148,8 +260,9 @@ export async function reconcileJournalFromBrokerSnapshot(input: {
   environment: string;
   accountId?: string | null;
 }) {
-  const knownRows = await runtime.DB.prepare("SELECT broker_trade_id FROM trade_journal WHERE broker_trade_id IS NOT NULL LIMIT 1000").all<{ broker_trade_id: string }>();
+  const knownRows = await runtime.DB.prepare("SELECT id, broker_trade_id, metadata_json FROM trade_journal WHERE broker_trade_id IS NOT NULL LIMIT 1000").all<{ id: string; broker_trade_id: string; metadata_json: string | null }>();
   const knownBrokerIds = new Set((knownRows.results ?? []).map((row) => row.broker_trade_id));
+  const knownByBrokerId = new Map((knownRows.results ?? []).map((row) => [row.broker_trade_id, row]));
   let importedUpdates = 0;
   const recoveredFromFills = missingJournalRecordsFromFills({
     openTrades: input.openTrades,
@@ -160,6 +273,7 @@ export async function reconcileJournalFromBrokerSnapshot(input: {
   });
   for (const recovered of recoveredFromFills) {
     await createJournalEntry(recovered);
+    knownByBrokerId.set(recovered.brokerTradeId, { id: recovered.id, broker_trade_id: recovered.brokerTradeId, metadata_json: json(recovered.metadata) });
     await writeSystemLog({
       category: "reconciliation",
       event: "trade.missing_imported_from_fills",
@@ -170,9 +284,36 @@ export async function reconcileJournalFromBrokerSnapshot(input: {
     });
     importedUpdates += 1;
   }
+
+  // Historical ORDER_FILL records expose clientOrderID instead of the tag
+  // object. Use it (and the richer open-trade snapshot when available) to
+  // correct generic broker imports created by older reconciliation code.
+  const openById = new Map(input.openTrades.map((trade) => [trade.id, trade]));
+  for (const fill of input.fills) {
+    if (!fill.isEntry || !fill.openedTradeId) continue;
+    const row = knownByBrokerId.get(fill.openedTradeId);
+    if (!row) continue;
+    const openTrade = openById.get(fill.openedTradeId) ?? null;
+    const source = foresightTradeSource(fill.clientTag ?? openTrade?.clientTag, fill.clientId ?? openTrade?.clientId);
+    if (!source) continue;
+    const metadata = parsedMetadata(row.metadata_json);
+    if (metadata.source === source && metadata.clientId === (fill.clientId ?? openTrade?.clientId ?? null)) continue;
+    await enrichRecoveredJournal({
+      id: row.id,
+      source,
+      clientId: fill.clientId ?? openTrade?.clientId,
+      clientTag: fill.clientTag ?? openTrade?.clientTag,
+      clientComment: fill.clientComment ?? openTrade?.clientComment,
+    });
+  }
   for (const trade of input.openTrades) {
-    const source = foresightTradeSource(trade.clientTag);
-    if (!source || knownBrokerIds.has(trade.id)) continue;
+    const source = foresightTradeSource(trade.clientTag, trade.clientId);
+    if (!source) continue;
+    if (knownBrokerIds.has(trade.id)) {
+      const row = knownByBrokerId.get(trade.id);
+      if (row) await enrichRecoveredJournal({ id: row.id, source, clientId: trade.clientId, clientTag: trade.clientTag, clientComment: trade.clientComment });
+      continue;
+    }
     await createJournalEntry({
       id: `oanda:${input.environment}:${input.accountId ?? "unknown"}:${trade.id}`,
       environment: input.environment,
@@ -199,7 +340,6 @@ export async function reconcileJournalFromBrokerSnapshot(input: {
   const rows = await runtime.DB.prepare("SELECT id, broker_trade_id, instrument, status, opened_at, metadata_json FROM trade_journal WHERE broker_trade_id IS NOT NULL AND status IN ('submitted', 'open', 'reconciliation_required') ORDER BY created_at ASC LIMIT 200").all<{
     id: string; broker_trade_id: string; instrument: string; status: string; opened_at: string | null; metadata_json: string | null;
   }>();
-  const openById = new Map(input.openTrades.map((trade) => [trade.id, trade]));
   let activityUpdates = 0;
   let closedUpdates = 0;
 

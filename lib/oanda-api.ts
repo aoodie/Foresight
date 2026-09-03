@@ -287,6 +287,7 @@ type OandaTransactionPayload = {
     instrument?: string;
     tradeID?: string;
     orderID?: string;
+    clientOrderID?: string;
     pl?: string;
     units?: string;
     price?: string;
@@ -295,7 +296,6 @@ type OandaTransactionPayload = {
       tradeID?: string;
       units?: string;
       price?: string;
-      clientExtensions?: { id?: string; tag?: string; comment?: string };
     };
     tradeReduced?: { tradeID?: string; realizedPL?: string };
     tradeClosed?: { tradeID?: string; realizedPL?: string };
@@ -350,9 +350,11 @@ export function normaliseOandaOrderFills(transactions: NonNullable<OandaTransact
       closeReason: isClose ? closeReasonFor(reason) : null,
       isEntry,
       isClose,
-      clientId: transaction.tradeOpened?.clientExtensions?.id ?? null,
-      clientTag: transaction.tradeOpened?.clientExtensions?.tag ?? null,
-      clientComment: transaction.tradeOpened?.clientExtensions?.comment ?? null,
+      clientId: transaction.clientOrderID ?? null,
+      // OANDA's historical ORDER_FILL schema carries clientOrderID but not the
+      // original extension tag/comment. Source inference uses the ID prefix.
+      clientTag: null,
+      clientComment: null,
     }];
   });
 }

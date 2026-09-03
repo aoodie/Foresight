@@ -247,7 +247,9 @@ class AutoTrader {
   }
 
   private closeFillFor(fills: Awaited<ReturnType<typeof fetchOandaOrderFills>>, tradeId: string) {
-    return [...fills].reverse().find((fill) => fill.isClose && fill.tradeIds.includes(tradeId)) ?? null;
+    return fills
+      .filter((fill) => fill.isClose && fill.tradeIds.includes(tradeId))
+      .sort((left, right) => right.time.localeCompare(left.time))[0] ?? null;
   }
 
   private log(input: WorkerEvent) {
@@ -419,7 +421,10 @@ class AutoTrader {
         continue;
       }
       const relatedFills = recentFills.filter((fill) => fill.tradeIds.includes(managed.broker_trade_id));
-      const fillPnl = relatedFills.reduce((sum, fill) => sum + fill.pnl, 0);
+      const fillPnl = relatedFills.reduce((sum, fill) => {
+        const allocated = fill.pnlByTradeId?.[managed.broker_trade_id];
+        return sum + (Number.isFinite(allocated) ? Number(allocated) : fill.tradeIds.length === 1 ? fill.pnl : 0);
+      }, 0);
       const pnl = brokerTrade.pnl ?? fillPnl;
       const closeFill = this.closeFillFor(recentFills, managed.broker_trade_id);
       const closeReason = closeFill?.closeReason ?? "Closed order";

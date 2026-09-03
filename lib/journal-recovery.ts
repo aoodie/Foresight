@@ -64,12 +64,15 @@ export function missingJournalRecordsFromFills(input: {
 
   for (const entry of input.fills) {
     const tradeId = entry.openedTradeId;
-    const taggedSource = foresightTradeSource(entry.clientTag);
+    const openTrade = tradeId ? openById.get(tradeId) ?? null : null;
+    const taggedSource = foresightTradeSource(
+      entry.clientTag ?? openTrade?.clientTag,
+      entry.clientId ?? openTrade?.clientId,
+    );
     const source = taggedSource ?? "broker_account";
     if (!entry.isEntry || !tradeId || input.knownBrokerIds.has(tradeId) || !entry.instrument || !entry.units) continue;
     const closes = input.fills.filter((fill) => fill.isClose && fill.tradeIds.includes(tradeId)).sort((a, b) => a.time.localeCompare(b.time));
     const latestClose = closes.at(-1) ?? null;
-    const openTrade = openById.get(tradeId) ?? null;
     const pnl = closes.reduce((sum, fill) => {
       const allocated = fill.pnlByTradeId?.[tradeId];
       return sum + (Number.isFinite(allocated) ? Number(allocated) : fill.tradeIds.length === 1 ? fill.pnl : 0);
@@ -82,7 +85,7 @@ export function missingJournalRecordsFromFills(input: {
       accountId: input.accountId ?? null,
       instrument: entry.instrument,
       direction: entry.units > 0 ? "long" : "short",
-      style: entry.clientComment || "intraday",
+      style: entry.clientComment || openTrade?.clientComment || "intraday",
       strategyName: source === "autonomous" ? "Autotrader recovery" : source === "dashboard_manual" ? "Dashboard trade recovery" : "OANDA broker import",
       status,
       entryPrice: entry.price,
@@ -102,8 +105,9 @@ export function missingJournalRecordsFromFills(input: {
         recoverySource: taggedSource ? "tagged_entry_fill" : "broker_entry_fill",
         source,
         entryTransactionId: entry.id,
-        clientId: entry.clientId,
-        clientTag: entry.clientTag,
+        clientId: entry.clientId ?? openTrade?.clientId,
+        clientTag: entry.clientTag ?? openTrade?.clientTag,
+        clientComment: entry.clientComment ?? openTrade?.clientComment,
         ...(status === "closed" ? {
           closeReason,
           closePrice: latestClose!.price,

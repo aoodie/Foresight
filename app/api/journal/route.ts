@@ -1,6 +1,6 @@
 import { headers } from "next/headers";
 import { NextResponse } from "next/server";
-import { createJournalEntry, reconcileJournalFromBrokerSnapshot, updateJournalEntry } from "@/lib/trading-records";
+import { backfillJournalLifecycleEvents, createJournalEntry, reconcileJournalFromBrokerSnapshot, updateJournalEntry } from "@/lib/trading-records";
 import { getOandaToken } from "@/lib/oanda-secret";
 import { fetchOandaOpenTrades, fetchOandaOrderFills } from "@/lib/oanda-api";
 import { env } from "cloudflare:workers";
@@ -27,8 +27,12 @@ export async function GET(request: Request) {
       reconciliationError = error instanceof Error ? error.message : "Broker reconciliation failed.";
     }
   }
-  const rows = await runtime.DB.prepare("SELECT * FROM trade_journal ORDER BY created_at DESC LIMIT ?").bind(limit).all();
-  return NextResponse.json({ entries: rows.results ?? [], reconciliation, reconciliationError });
+  const lifecycleBackfilled = await backfillJournalLifecycleEvents(limit);
+  const [rows, eventCount] = await Promise.all([
+    runtime.DB.prepare("SELECT * FROM trade_journal ORDER BY COALESCE(opened_at, created_at) DESC LIMIT ?").bind(limit).all(),
+    runtime.DB.prepare("SELECT COUNT(*) AS count FROM trade_journal_events").first<{ count: number }>(),
+  ]);
+  return NextResponse.json({ entries: rows.results ?? [], reconciliation, reconciliationError, lifecycleBackfilled, lifecycleEventCount: Number(eventCount?.count ?? 0) });
 }
 
 export async function POST(request: Request) {
