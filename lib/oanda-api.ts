@@ -305,12 +305,11 @@ type OandaTransactionPayload = {
 };
 
 function closeReasonFor(reason: string | null) {
-  if (reason === "TAKE_PROFIT_ORDER") return "TP hit";
-  if (reason === "STOP_LOSS_ORDER") return "SL hit";
-  if (reason === "TRAILING_STOP_LOSS_ORDER") return "Trailing stop hit";
-  if (reason === "MARKET_ORDER_TRADE_CLOSE" || reason === "CLIENT_REQUEST") return "Manual close";
-  if (reason === "LINKED_TRADE_CLOSED") return "Linked order close";
-  return reason ? reason.replaceAll("_", " ").toLowerCase() : "Closed order";
+  if (reason === "TAKE_PROFIT_ORDER") return "TP";
+  if (reason === "STOP_LOSS_ORDER") return "SL";
+  if (reason === "TRAILING_STOP_LOSS_ORDER") return "TRAILING_STOP";
+  if (reason === "MARKET_ORDER_TRADE_CLOSE" || reason === "CLIENT_REQUEST") return "MANUAL";
+  return "BROKER";
 }
 
 export function normaliseOandaOrderFills(transactions: NonNullable<OandaTransactionPayload["transactions"]>) {

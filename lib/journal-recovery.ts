@@ -1,4 +1,4 @@
-import { foresightTradeSource } from "./trade-monitoring";
+import { foresightJournalId, foresightTradeSource, type JournalTradeSource } from "./trade-monitoring";
 import { standardLots } from "./trade-risk";
 
 export type JournalRecoveryOpenTrade = {
@@ -69,7 +69,8 @@ export function missingJournalRecordsFromFills(input: {
       entry.clientTag ?? openTrade?.clientTag,
       entry.clientId ?? openTrade?.clientId,
     );
-    const source = taggedSource ?? "broker_account";
+    const source: JournalTradeSource = taggedSource ?? "project_recovery";
+    const clientId = entry.clientId ?? openTrade?.clientId;
     if (!entry.isEntry || !tradeId || input.knownBrokerIds.has(tradeId) || !entry.instrument || !entry.units) continue;
     const closes = input.fills.filter((fill) => fill.isClose && fill.tradeIds.includes(tradeId)).sort((a, b) => a.time.localeCompare(b.time));
     const latestClose = closes.at(-1) ?? null;
@@ -78,15 +79,15 @@ export function missingJournalRecordsFromFills(input: {
       return sum + (Number.isFinite(allocated) ? Number(allocated) : fill.tradeIds.length === 1 ? fill.pnl : 0);
     }, 0);
     const status = latestClose && !openTrade ? "closed" : "open";
-    const closeReason = latestClose?.closeReason ?? "Closed order";
+    const closeReason = latestClose?.closeReason ?? "BROKER";
     recovered.push({
-      id: `oanda:${input.environment}:${input.accountId ?? "unknown"}:${tradeId}`,
+      id: foresightJournalId(clientId) ?? `oanda:${input.environment}:${input.accountId ?? "unknown"}:${tradeId}`,
       environment: input.environment,
       accountId: input.accountId ?? null,
       instrument: entry.instrument,
       direction: entry.units > 0 ? "long" : "short",
       style: entry.clientComment || openTrade?.clientComment || "intraday",
-      strategyName: source === "autonomous" ? "Autotrader recovery" : source === "dashboard_manual" ? "Dashboard trade recovery" : "OANDA broker import",
+      strategyName: source === "autonomous" ? "Autotrader recovery" : source === "dashboard_manual" ? "Dashboard trade recovery" : "Foresight project recovery",
       status,
       entryPrice: entry.price,
       stopLoss: openTrade?.stopLoss ?? null,
@@ -102,10 +103,10 @@ export function missingJournalRecordsFromFills(input: {
       closedAt: status === "closed" ? latestClose!.time : null,
       metadata: {
         recoveredFromBroker: true,
-        recoverySource: taggedSource ? "tagged_entry_fill" : "broker_entry_fill",
+        recoverySource: taggedSource ? "tagged_entry_fill" : "project_entry_fill",
         source,
         entryTransactionId: entry.id,
-        clientId: entry.clientId ?? openTrade?.clientId,
+        clientId,
         clientTag: entry.clientTag ?? openTrade?.clientTag,
         clientComment: entry.clientComment ?? openTrade?.clientComment,
         ...(status === "closed" ? {

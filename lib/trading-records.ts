@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { foresightTradeSource } from "./trade-monitoring";
+import { foresightJournalId, foresightTradeSource, type JournalTradeSource } from "./trade-monitoring";
 import { standardLots } from "./trade-risk";
 import { missingJournalRecordsFromFills, type JournalRecoveryFill } from "./journal-recovery";
 
@@ -173,12 +173,14 @@ export async function updateJournalByBrokerTradeId(input: { brokerTradeId: strin
 
 async function enrichRecoveredJournal(input: {
   id: string;
-  source: "autonomous" | "dashboard_manual";
+  source: JournalTradeSource;
   clientId?: string | null;
   clientTag?: string | null;
   clientComment?: string | null;
 }) {
-  const strategyName = input.source === "autonomous" ? "Autotrader recovery" : "Dashboard trade recovery";
+  const strategyName = input.source === "autonomous" ? "Autotrader recovery"
+    : input.source === "dashboard_manual" ? "Dashboard trade recovery"
+    : "Foresight project recovery";
   const metadata = { source: input.source, clientId: input.clientId ?? null, clientTag: input.clientTag ?? null, clientComment: input.clientComment ?? null };
   const metadataJson = json(metadata);
   const result = await runtime.DB.prepare("UPDATE trade_journal SET strategy_name = CASE WHEN strategy_name = 'OANDA broker import' THEN ? ELSE strategy_name END, style = COALESCE(?, style), metadata_json = json_patch(CASE WHEN json_valid(metadata_json) THEN metadata_json ELSE '{}' END, ?), updated_at = ? WHERE id = ? AND (strategy_name = 'OANDA broker import' OR COALESCE(json_extract(metadata_json, '$.source'), '') != ? OR COALESCE(json_extract(metadata_json, '$.clientId'), '') != ?)")
@@ -254,15 +256,41 @@ function parsedMetadata(value: unknown) {
   }
 }
 
+type KnownJournalRow = { id: string; broker_trade_id: string | null; metadata_json: string | null };
+
+function linkedJournalRow(clientId: string | null | undefined, knownById: Map<string, KnownJournalRow>) {
+  const exactId = foresightJournalId(clientId);
+  if (exactId) return knownById.get(exactId) ?? null;
+
+  // Dashboard orders created before full IDs were introduced retained the
+  // first 24 UUID characters. Resolve that legacy prefix only when unique.
+  if (!clientId?.startsWith("foresight-ui-")) return null;
+  const prefix = clientId.slice("foresight-ui-".length);
+  if (prefix.length < 20) return null;
+  const matches = [...knownById.values()].filter((row) => row.id.startsWith(prefix));
+  return matches.length === 1 ? matches[0] : null;
+}
+
 export async function reconcileJournalFromBrokerSnapshot(input: {
   openTrades: BrokerSnapshotTrade[];
   fills: BrokerSnapshotFill[];
   environment: string;
   accountId?: string | null;
 }) {
-  const knownRows = await runtime.DB.prepare("SELECT id, broker_trade_id, metadata_json FROM trade_journal WHERE broker_trade_id IS NOT NULL LIMIT 1000").all<{ id: string; broker_trade_id: string; metadata_json: string | null }>();
-  const knownBrokerIds = new Set((knownRows.results ?? []).map((row) => row.broker_trade_id));
-  const knownByBrokerId = new Map((knownRows.results ?? []).map((row) => [row.broker_trade_id, row]));
+  const reclassifiedAt = new Date().toISOString();
+  const legacyMetadata = json({ source: "project_recovery", reclassifiedAt });
+  const reclassified = await runtime.DB.prepare("UPDATE trade_journal SET strategy_name = CASE WHEN strategy_name = 'OANDA broker import' THEN 'Foresight project recovery' ELSE strategy_name END, metadata_json = json_patch(CASE WHEN json_valid(metadata_json) THEN metadata_json ELSE '{}' END, ?), updated_at = ? WHERE strategy_name = 'OANDA broker import' OR COALESCE(json_extract(metadata_json, '$.source'), '') = 'broker_account'")
+    .bind(legacyMetadata, reclassifiedAt).run();
+  const reclassifiedUpdates = Number(reclassified.meta?.changes ?? 0);
+  if (reclassifiedUpdates) {
+    await writeSystemLog({ category: "reconciliation", event: "journal.project_ownership_restored", message: `${reclassifiedUpdates} recovered journal record(s) reclassified as Foresight project trades.`, environment: input.environment, details: { reclassifiedUpdates } });
+  }
+
+  const knownRows = await runtime.DB.prepare("SELECT id, broker_trade_id, metadata_json FROM trade_journal LIMIT 2000").all<KnownJournalRow>();
+  const knownById = new Map((knownRows.results ?? []).map((row) => [row.id, row]));
+  const brokerRows = (knownRows.results ?? []).filter((row): row is KnownJournalRow & { broker_trade_id: string } => typeof row.broker_trade_id === "string");
+  const knownBrokerIds = new Set(brokerRows.map((row) => row.broker_trade_id));
+  const knownByBrokerId = new Map(brokerRows.map((row) => [row.broker_trade_id, row]));
   let importedUpdates = 0;
   const recoveredFromFills = missingJournalRecordsFromFills({
     openTrades: input.openTrades,
@@ -272,15 +300,33 @@ export async function reconcileJournalFromBrokerSnapshot(input: {
     accountId: input.accountId,
   });
   for (const recovered of recoveredFromFills) {
-    await createJournalEntry(recovered);
-    knownByBrokerId.set(recovered.brokerTradeId, { id: recovered.id, broker_trade_id: recovered.brokerTradeId, metadata_json: json(recovered.metadata) });
+    const recoveredClientId = typeof recovered.metadata.clientId === "string" ? recovered.metadata.clientId : null;
+    const linked = knownById.get(recovered.id) ?? linkedJournalRow(recoveredClientId, knownById);
+    const journalId = linked?.id ?? recovered.id;
+    if (linked) {
+      await updateJournalEntry({
+        id: linked.id,
+        status: recovered.status,
+        pnl: recovered.pnl,
+        brokerTradeId: recovered.brokerTradeId,
+        notes: recovered.notes,
+        openedAt: recovered.openedAt,
+        closedAt: recovered.closedAt,
+        metadata: recovered.metadata,
+      });
+      await enrichRecoveredJournal({ id: linked.id, source: recovered.metadata.source as JournalTradeSource, clientId: recoveredClientId, clientTag: typeof recovered.metadata.clientTag === "string" ? recovered.metadata.clientTag : null, clientComment: typeof recovered.metadata.clientComment === "string" ? recovered.metadata.clientComment : null });
+    } else {
+      await createJournalEntry(recovered);
+      knownById.set(recovered.id, { id: recovered.id, broker_trade_id: recovered.brokerTradeId, metadata_json: json(recovered.metadata) });
+    }
+    knownByBrokerId.set(recovered.brokerTradeId, { id: journalId, broker_trade_id: recovered.brokerTradeId, metadata_json: json(recovered.metadata) });
     await writeSystemLog({
       category: "reconciliation",
-      event: "trade.missing_imported_from_fills",
+      event: linked ? "trade.missing_linked_from_fills" : "trade.missing_recovered_from_fills",
       message: `${recovered.instrument}: ${recovered.notes}`,
       instrument: recovered.instrument,
       environment: input.environment,
-      details: { journalId: recovered.id, brokerTradeId: recovered.brokerTradeId, status: recovered.status },
+      details: { journalId, brokerTradeId: recovered.brokerTradeId, status: recovered.status },
     });
     importedUpdates += 1;
   }
@@ -294,8 +340,7 @@ export async function reconcileJournalFromBrokerSnapshot(input: {
     const row = knownByBrokerId.get(fill.openedTradeId);
     if (!row) continue;
     const openTrade = openById.get(fill.openedTradeId) ?? null;
-    const source = foresightTradeSource(fill.clientTag ?? openTrade?.clientTag, fill.clientId ?? openTrade?.clientId);
-    if (!source) continue;
+    const source = foresightTradeSource(fill.clientTag ?? openTrade?.clientTag, fill.clientId ?? openTrade?.clientId) ?? "project_recovery";
     const metadata = parsedMetadata(row.metadata_json);
     if (metadata.source === source && metadata.clientId === (fill.clientId ?? openTrade?.clientId ?? null)) continue;
     await enrichRecoveredJournal({
@@ -307,21 +352,30 @@ export async function reconcileJournalFromBrokerSnapshot(input: {
     });
   }
   for (const trade of input.openTrades) {
-    const source = foresightTradeSource(trade.clientTag, trade.clientId);
-    if (!source) continue;
+    const source = foresightTradeSource(trade.clientTag, trade.clientId) ?? "project_recovery";
     if (knownBrokerIds.has(trade.id)) {
       const row = knownByBrokerId.get(trade.id);
       if (row) await enrichRecoveredJournal({ id: row.id, source, clientId: trade.clientId, clientTag: trade.clientTag, clientComment: trade.clientComment });
       continue;
     }
+    const linked = linkedJournalRow(trade.clientId, knownById);
+    if (linked) {
+      const metadata = { recoveredFromBroker: true, recoverySource: "project_open_trade", source, clientId: trade.clientId, clientTag: trade.clientTag, clientComment: trade.clientComment };
+      await updateJournalEntry({ id: linked.id, status: "open", brokerTradeId: trade.id, notes: "Foresight journal record relinked to its open OANDA trade.", openedAt: trade.openTime, metadata });
+      await enrichRecoveredJournal({ id: linked.id, source, clientId: trade.clientId, clientTag: trade.clientTag, clientComment: trade.clientComment });
+      knownBrokerIds.add(trade.id);
+      knownByBrokerId.set(trade.id, { id: linked.id, broker_trade_id: trade.id, metadata_json: json(metadata) });
+      importedUpdates += 1;
+      continue;
+    }
     await createJournalEntry({
-      id: `oanda:${input.environment}:${input.accountId ?? "unknown"}:${trade.id}`,
+      id: foresightJournalId(trade.clientId) ?? `oanda:${input.environment}:${input.accountId ?? "unknown"}:${trade.id}`,
       environment: input.environment,
       accountId: input.accountId ?? null,
       instrument: trade.instrument,
       direction: trade.units > 0 ? "long" : "short",
       style: trade.clientComment || "intraday",
-      strategyName: source === "autonomous" ? "Autotrader recovery" : "Dashboard trade recovery",
+      strategyName: source === "autonomous" ? "Autotrader recovery" : source === "dashboard_manual" ? "Dashboard trade recovery" : "Foresight project recovery",
       status: "open",
       entryPrice: trade.price,
       stopLoss: trade.stopLoss,
@@ -329,9 +383,9 @@ export async function reconcileJournalFromBrokerSnapshot(input: {
       units: trade.units,
       lots: standardLots(trade.instrument, trade.units),
       brokerTradeId: trade.id,
-      notes: "Recovered from the tagged OANDA trade because its journal event was missing.",
+      notes: "Recovered from the Foresight OANDA trade because its journal event was missing.",
       openedAt: trade.openTime,
-      metadata: { recoveredFromBroker: true, source, clientId: trade.clientId, clientTag: trade.clientTag },
+      metadata: { recoveredFromBroker: true, recoverySource: "project_open_trade", source, clientId: trade.clientId, clientTag: trade.clientTag, clientComment: trade.clientComment },
     });
     knownBrokerIds.add(trade.id);
     importedUpdates += 1;
@@ -367,12 +421,12 @@ export async function reconcileJournalFromBrokerSnapshot(input: {
       const allocated = fill.pnlByTradeId?.[row.broker_trade_id];
       return sum + (Number.isFinite(allocated) ? Number(allocated) : fill.tradeIds.length === 1 ? fill.pnl : 0);
     }, 0);
-    const closeReason = latest.closeReason ?? "Closed order";
+    const closeReason = latest.closeReason ?? "BROKER";
     const notes = `${closeReason}. Journal reconciled to OANDA transaction ${latest.id}.`;
     await updateJournalEntry({ id: row.id, status: "closed", brokerTradeId: row.broker_trade_id, pnl, notes, closedAt: latest.time, metadata: { closeReason, closePrice: latest.price, closeTransactionId: latest.id, closeTime: latest.time, reconciledAt: new Date().toISOString() } });
     await writeSystemLog({ category: "reconciliation", event: "trade.closed_reconciled", message: `${row.instrument}: ${notes}`, instrument: row.instrument, environment: input.environment, details: { journalId: row.id, brokerTradeId: row.broker_trade_id, pnl, closePrice: latest.price, closeTime: latest.time } });
     closedUpdates += 1;
   }
 
-  return { checked: rows.results?.length ?? 0, importedUpdates, activityUpdates, closedUpdates };
+  return { checked: rows.results?.length ?? 0, reclassifiedUpdates, importedUpdates, activityUpdates, closedUpdates };
 }

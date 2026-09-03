@@ -188,14 +188,12 @@ class AutoTrader {
   }
 
   private sync(type: string, payload: unknown, eventKey = `${type}:${randomUUID()}`) {
-    this.syncTail = this.syncTail.then(() => this.syncNow(type, payload, eventKey), () => this.syncNow(type, payload, eventKey));
-    return this.syncTail;
-  }
-
-  private async syncNow(type: string, payload: unknown, eventKey: string) {
-    if (!this.config.dashboardUrl || !this.config.webhookSecret) return;
+    if (!this.config.dashboardUrl || !this.config.webhookSecret) return Promise.resolve();
+    // Persist the event locally before any broker request can complete. Delivery
+    // remains non-blocking and is retried by the durable worker queue.
     this.store.enqueueSync(eventKey, type, payload);
-    await this.flushSyncQueue();
+    this.syncTail = this.syncTail.then(() => this.flushSyncQueue(), () => this.flushSyncQueue());
+    return this.syncTail;
   }
 
   private async flushSyncQueue() {
@@ -340,8 +338,8 @@ class AutoTrader {
       const closed = await closeOandaTrade({ token: this.config.token, environment: this.config.environment, accountId: this.config.accountId, tradeId: trade.id });
       const notes = `LLM closed: ${review.explanation}`;
       const closePrice = Number.isFinite(closed.price) ? closed.price : null;
-      this.store.journalUpdateByBrokerTradeId(trade.id, "closed", closed.pnl, notes, { closeReason: "LLM close", closePrice, closeTransactionId: closed.transactionId, closeTime: closed.closeTime });
-      await this.syncJournalUpdate({ id: managed?.id, brokerTradeId: trade.id }, "closed", closed.pnl, notes, { closeReason: "LLM close", closePrice, closeTransactionId: closed.transactionId, closeTime: closed.closeTime });
+      this.store.journalUpdateByBrokerTradeId(trade.id, "closed", closed.pnl, notes, { closeReason: "LLM_CLOSE", closePrice, closeTransactionId: closed.transactionId, closeTime: closed.closeTime });
+      await this.syncJournalUpdate({ id: managed?.id, brokerTradeId: trade.id }, "closed", closed.pnl, notes, { closeReason: "LLM_CLOSE", closePrice, closeTransactionId: closed.transactionId, closeTime: closed.closeTime });
       this.log({ level: "warning", event: "trade.closed_by_policy", message: `Closed ${source === "dashboard_manual" ? "dashboard" : "autonomous"} ${trade.instrument} trade after a high-confidence LLM close decision.`, instrument: trade.instrument, details: { tradeId: trade.id, source, pnl: closed.pnl } });
     } else if (review.decision === "close" && review.confidence >= 70) {
       this.log({ level: "warning", event: "strategy.close_recommended", message: `${trade.instrument}: LLM recommends closing the ${source === "dashboard_manual" ? "dashboard" : "autonomous"} trade, but automatic close authority is disabled.`, instrument: trade.instrument, details: { tradeId: trade.id, source, confidence: review.confidence, recommendedAction: review.recommendedAction } });
@@ -389,8 +387,8 @@ class AutoTrader {
           const closed = await closeOandaTrade({ token: this.config.token, environment: this.config.environment, accountId: this.config.accountId, tradeId: trade.id });
           const notes = "Safety close: broker-side stop/target was missing.";
           const closePrice = Number.isFinite(closed.price) ? closed.price : null;
-          if (managed) this.store.journalUpdateByBrokerTradeId(trade.id, "closed", closed.pnl, notes, { closeReason: "Safety close", closePrice, closeTransactionId: closed.transactionId, closeTime: closed.closeTime });
-          await this.syncJournalUpdate({ id: managed?.id, brokerTradeId: trade.id }, "closed", closed.pnl, notes, { closeReason: "Safety close", closePrice, closeTransactionId: closed.transactionId, closeTime: closed.closeTime });
+          if (managed) this.store.journalUpdateByBrokerTradeId(trade.id, "closed", closed.pnl, notes, { closeReason: "RISK_ENGINE", closePrice, closeTransactionId: closed.transactionId, closeTime: closed.closeTime });
+          await this.syncJournalUpdate({ id: managed?.id, brokerTradeId: trade.id }, "closed", closed.pnl, notes, { closeReason: "RISK_ENGINE", closePrice, closeTransactionId: closed.transactionId, closeTime: closed.closeTime });
         }
         continue;
       }
@@ -427,7 +425,7 @@ class AutoTrader {
       }, 0);
       const pnl = brokerTrade.pnl ?? fillPnl;
       const closeFill = this.closeFillFor(recentFills, managed.broker_trade_id);
-      const closeReason = closeFill?.closeReason ?? "Closed order";
+      const closeReason = closeFill?.closeReason ?? "BROKER";
       const notes = `${closeReason}. Trade no longer open at OANDA; reconciled from transaction history.`;
       const closePrice = closeFill?.price ?? brokerTrade.closePrice;
       const closeTransactionId = closeFill?.id ?? brokerTrade.closingTransactionIds.at(-1) ?? null;
@@ -470,11 +468,12 @@ class AutoTrader {
     const signalKey = `${result.instrument}:${this.config.mode}:${bias}:${result.updatedAt}:${result.score}:${result.selectedStrategy?.id ?? "trend-continuation"}`;
     if (this.store.get<number>(`signal:${signalKey}`)) return null;
     const journalId = randomUUID();
-    const signalHash = await hashInput(signalKey);
-    const clientId = `foresight-${signalHash.slice(0, 24)}`;
+    const clientId = `foresight-at-${journalId}`;
     this.store.set(`signal:${signalKey}`, Date.now());
     const lots = standardLots(result.instrument, fixedSizing.units);
-    this.store.journalCreate({ id: journalId, brokerTradeId: null, environment: this.config.environment, accountId: this.config.accountId, instrument: result.instrument, direction: bias, style: this.config.mode, strategyName: result.selectedStrategy?.name ?? "Multi-timeframe trend continuation", entryPrice: plan.entry, stopLoss: result.stopLoss!, takeProfit1: result.takeProfit1!, takeProfit2: result.takeProfit2, units: direction * fixedSizing.units, riskPercent: this.config.riskPercent, riskAmount: fixedSizing.riskAmount, status: "submitted", metadata: { strategyVersion: result.strategyVersion, score: result.score, confirmations: result.confirmations, selectedStrategy: result.selectedStrategy, timeframes: result.timeframeAlignment, clientId, signalKey, riskReward: protection.riskReward, lots, sizeLockScope: this.config.sizeLockScope, sizeLockPeriod: fixedSizing.period, fixedUnits: fixedSizing.units, riskSafeUnits: sizing.units, stopDistance: sizing.stopDistance, lossConversionFactor: quote.homeConversionFactors.negativeUnits } });
+    this.store.journalCreate({ id: journalId, brokerTradeId: null, environment: this.config.environment, accountId: this.config.accountId, instrument: result.instrument, direction: bias, style: this.config.mode, strategyName: result.selectedStrategy?.name ?? "Multi-timeframe trend continuation", entryPrice: plan.entry, stopLoss: result.stopLoss!, takeProfit1: result.takeProfit1!, takeProfit2: result.takeProfit2, units: direction * fixedSizing.units, riskPercent: this.config.riskPercent, riskAmount: fixedSizing.riskAmount, status: "submitted", metadata: { source: "autonomous", strategyVersion: result.strategyVersion, score: result.score, confirmations: result.confirmations, selectedStrategy: result.selectedStrategy, timeframes: result.timeframeAlignment, clientId, signalKey, riskReward: protection.riskReward, lots, sizeLockScope: this.config.sizeLockScope, sizeLockPeriod: fixedSizing.period, fixedUnits: fixedSizing.units, riskSafeUnits: sizing.units, stopDistance: sizing.stopDistance, lossConversionFactor: quote.homeConversionFactors.negativeUnits } });
+    const submittedRow = this.store.journalRows().find((item) => item.id === journalId);
+    if (submittedRow) void this.sync("journal.create", this.journalCreatePayload(submittedRow), `journal.create:${journalId}:submitted`);
     try {
       const order = await submitOandaMarketOrder({ token: this.config.token, environment: this.config.environment, accountId: this.config.accountId, instrument: result.instrument, units: direction * fixedSizing.units, stopLoss: result.stopLoss, takeProfit: target, clientExtensions: { id: clientId, tag: "foresight-autotrader", comment: `${this.config.mode}:${this.config.sizeLockScope}` } });
       if (!order.tradeId) {

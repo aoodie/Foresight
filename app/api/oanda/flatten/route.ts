@@ -27,7 +27,7 @@ export async function POST(request: Request) {
         const closed = await closeOandaTrade({ token: connection.token, environment: accountEnvironment, accountId: connection.accountId, tradeId: trade.id });
         let journalWarning: string | null = null;
         try {
-          await updateJournalByBrokerTradeId({ brokerTradeId: trade.id, status: "closed", pnl: closed.pnl, notes: "Manual close from Foresight FX.", metadata: { closeReason: "Manual close", closePrice: Number.isFinite(closed.price) ? closed.price : null, closeTransactionId: closed.transactionId } });
+          await updateJournalByBrokerTradeId({ brokerTradeId: trade.id, status: "closed", pnl: closed.pnl, notes: "Manual close from Foresight FX.", closedAt: closed.closeTime, metadata: { closeReason: "MANUAL", closePrice: Number.isFinite(closed.price) ? closed.price : null, closeTransactionId: closed.transactionId, closeTime: closed.closeTime } });
         } catch (error) {
           journalWarning = error instanceof Error ? error.message : "The closed trade could not be updated in the journal.";
         }

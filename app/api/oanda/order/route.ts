@@ -52,10 +52,12 @@ export async function POST(request: Request) {
   const journalMetadata = journal.metadata && typeof journal.metadata === "object" ? journal.metadata as Record<string, unknown> : {};
   const lots = standardLots(body.instrument!, body.units!);
   const correlationId = crypto.randomUUID();
-  let journalId: string | null = null;
+  let journalId: string | null = crypto.randomUUID();
   let orderSubmitted = false;
   try {
+    const clientId = `foresight-ui-${journalId}`;
     journalId = await createJournalEntry({
+      id: journalId,
       environment: connection.environment,
       accountId: connection?.accountId ?? null,
       instrument: body.instrument!,
@@ -75,11 +77,11 @@ export async function POST(request: Request) {
       thesis: typeof journal.thesis === "string" ? journal.thesis : null,
       evidence: typeof journal.evidence === "string" ? journal.evidence : null,
       invalidation: typeof journal.invalidation === "string" ? journal.invalidation : null,
-      metadata: { ...journalMetadata, lots, riskSafeUnits: sizing.units, submittedUnits: Math.abs(body.units!), stopDistance: protection.stopDistance, lossConversionFactor: quote.homeConversionFactors.negativeUnits },
+      metadata: { ...journalMetadata, source: "dashboard_manual", clientId, lots, riskSafeUnits: sizing.units, submittedUnits: Math.abs(body.units!), stopDistance: protection.stopDistance, lossConversionFactor: quote.homeConversionFactors.negativeUnits },
       openedAt: null,
     });
     await writeSystemLog({ category: "execution", event: "order.requested", message: `OANDA ${connection.environment} order requested for ${body.instrument}.`, instrument: body.instrument, environment: connection.environment, correlationId, details: { journalId, units: body.units, stopLoss: body.stopLoss, takeProfit: body.takeProfit } });
-    const result = await submitOandaMarketOrder({ token: connection.token, environment: connection.environment, accountId: connection.accountId, instrument: body.instrument!, units: body.units!, stopLoss: body.stopLoss, takeProfit: body.takeProfit, clientExtensions: { id: `foresight-ui-${journalId.slice(0, 24)}`, tag: "foresight-manual", comment: typeof journal.style === "string" ? journal.style.slice(0, 128) : "manual" } });
+    const result = await submitOandaMarketOrder({ token: connection.token, environment: connection.environment, accountId: connection.accountId, instrument: body.instrument!, units: body.units!, stopLoss: body.stopLoss, takeProfit: body.takeProfit, clientExtensions: { id: clientId, tag: "foresight-manual", comment: typeof journal.style === "string" ? journal.style.slice(0, 128) : "manual" } });
     orderSubmitted = true;
     const brokerTradeId = result.tradeId;
     const status = brokerTradeId ? "open" : "closed";

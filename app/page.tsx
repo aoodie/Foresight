@@ -889,7 +889,7 @@ export default function Home() {
       const llmClose = Boolean(journal?.notes?.startsWith("LLM closed:"));
       const markers = [] as Array<{ time: string; price: number; kind: "entry" | "close"; label: string; color: string }>;
       if (fill.isEntry) markers.push({ time: fill.time, price: fill.price!, kind: "entry", label: fill.units < 0 ? "SHORT ENTRY" : "LONG ENTRY", color: "#a4ffcf" });
-      if (fill.isClose) markers.push({ time: fill.time, price: fill.price!, kind: "close", label: llmClose ? "LLM CLOSE" : fill.closeReason ?? "CLOSE", color: llmClose ? "#c4b5fd" : fill.closeReason === "TP hit" ? "#7dd3fc" : "#fb7185" });
+      if (fill.isClose) markers.push({ time: fill.time, price: fill.price!, kind: "close", label: llmClose ? "LLM CLOSE" : fill.closeReason ?? "CLOSE", color: llmClose ? "#c4b5fd" : fill.closeReason === "TP" ? "#7dd3fc" : "#fb7185" });
       return markers;
     }), [instrument, journalEntries, tradeFills]);
   const totalUnrealizedPL = openTrades.reduce((total, trade) => total + trade.unrealizedPL, 0);

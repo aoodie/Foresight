@@ -30,5 +30,15 @@ test("infers trade source from OANDA historical client order IDs", async () => {
   const { foresightTradeSource } = await vite.ssrLoadModule("/lib/trade-monitoring.ts");
   assert.equal(foresightTradeSource(null, "foresight-abcd"), "autonomous");
   assert.equal(foresightTradeSource(null, "foresight-ui-abcd"), "dashboard_manual");
+  assert.equal(foresightTradeSource(null, "foresight-at-abcd"), "autonomous");
   assert.equal(foresightTradeSource(null, "other-client"), null);
+});
+
+test("extracts only complete journal UUIDs from new OANDA client IDs", async () => {
+  const { foresightJournalId } = await vite.ssrLoadModule("/lib/trade-monitoring.ts");
+  const journalId = "c5a62dcc-bfc8-4b8a-a98f-7dca717339ec";
+  assert.equal(foresightJournalId(`foresight-ui-${journalId}`), journalId);
+  assert.equal(foresightJournalId(`foresight-at-${journalId}`), journalId);
+  assert.equal(foresightJournalId("foresight-ui-c5a62dcc-bfc8-4b8a-a98f"), null);
+  assert.equal(foresightJournalId("foresight-legacy-hash"), null);
 });

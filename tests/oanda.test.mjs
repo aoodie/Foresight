@@ -78,6 +78,21 @@ test("follows OANDA transaction pages and preserves the historical client order 
   }
 });
 
+test("normalises broker close reasons to the journal taxonomy", async () => {
+  const { normaliseOandaOrderFills } = await vite.ssrLoadModule("/lib/oanda-api.ts");
+  const reasons = [
+    ["TAKE_PROFIT_ORDER", "TP"],
+    ["STOP_LOSS_ORDER", "SL"],
+    ["TRAILING_STOP_LOSS_ORDER", "TRAILING_STOP"],
+    ["MARKET_ORDER_TRADE_CLOSE", "MANUAL"],
+    ["UNKNOWN_ORDER_REASON", "BROKER"],
+  ];
+  for (const [reason, expected] of reasons) {
+    const [fill] = normaliseOandaOrderFills([{ id: reason, time: "2026-09-03T01:00:00.000Z", instrument: "EUR_USD", tradeID: "42", tradeClosed: { tradeID: "42", realizedPL: "2" }, units: "-1000", price: "1.17", pl: "2", reason }]);
+    assert.equal(fill.closeReason, expected);
+  }
+});
+
 test("sends pair chat with a fixed research-only role and selected-pair context", async () => {
   const { askPairAnalyst, pairChatInstructions } = await vite.ssrLoadModule("/lib/pair-chat.ts");
   const originalFetch = globalThis.fetch;
