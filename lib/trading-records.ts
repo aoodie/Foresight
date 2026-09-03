@@ -118,7 +118,20 @@ async function appendHistoricalOpenEvent(id: string) {
 }
 
 export async function createJournalEntry(input: JournalRecordInput) {
-  const id = input.id ?? crypto.randomUUID();
+  let id = input.id ?? crypto.randomUUID();
+  let metadata = input.metadata;
+  if (input.brokerTradeId) {
+    const existing = await runtime.DB.prepare("SELECT id FROM trade_journal WHERE broker_trade_id = ? AND environment = ? AND account_id IS ? ORDER BY created_at ASC LIMIT 1")
+      .bind(input.brokerTradeId, input.environment, input.accountId ?? null).first<{ id: string }>();
+    if (existing && existing.id !== id) {
+      metadata = {
+        ...(input.metadata && typeof input.metadata === "object" ? input.metadata as Record<string, unknown> : {}),
+        originatingJournalId: id,
+        mergedByBrokerTradeId: true,
+      };
+      id = existing.id;
+    }
+  }
   const now = new Date().toISOString();
   await runtime.DB.prepare(`INSERT INTO trade_journal (id, created_at, updated_at, environment, account_id, instrument, direction, style, strategy_name, setup_type, status, entry_price, stop_loss, take_profit_1, take_profit_2, units, lots, risk_percent, risk_amount, pnl, broker_trade_id, thesis, evidence, invalidation, notes, opened_at, closed_at, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at, environment = excluded.environment,
@@ -139,9 +152,9 @@ export async function createJournalEntry(input: JournalRecordInput) {
     input.stopLoss ?? null, input.takeProfit1 ?? null, input.takeProfit2 ?? null, input.units ?? null,
     input.lots ?? null, input.riskPercent ?? null, input.riskAmount ?? null, input.pnl ?? null,
     input.brokerTradeId ?? null, input.thesis ?? null, input.evidence ?? null, input.invalidation ?? null,
-    input.notes ?? null, input.openedAt ?? null, input.closedAt ?? null, json(input.metadata),
+    input.notes ?? null, input.openedAt ?? null, input.closedAt ?? null, json(metadata),
   ).run();
-  await appendCurrentJournalEvent(id, input.metadata && typeof input.metadata === "object" ? input.metadata as Record<string, unknown> : undefined);
+  await appendCurrentJournalEvent(id, metadata && typeof metadata === "object" ? metadata as Record<string, unknown> : undefined);
   if (input.closedAt && input.openedAt) await appendHistoricalOpenEvent(id);
   return id;
 }
