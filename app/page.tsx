@@ -946,6 +946,7 @@ export default function Home() {
           <NavLink href="/research" active={isResearch}>
             News & events
           </NavLink>
+          <NavLink href="/learning" active={false}>Learning lab</NavLink>
           <NavLink href="/journal" active={false}>
             Journal
           </NavLink>
