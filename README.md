@@ -36,11 +36,41 @@ defaults to the OANDA Practice account. Live execution requires both
 the example environment file. Set `AUTOTRADER_AUTOCLOSE_ON_LLM_CLOSE=true`
 only after testing the review behaviour on Practice.
 
+Position size is fixed per instrument for each UTC day by default
+(`AUTOTRADER_SIZE_LOCK_SCOPE=daily`). The first qualifying setup establishes
+the size from equity, stop distance, and OANDA's loss-side home-currency
+conversion factor. Later setups for that instrument reuse the exact units. If
+those units would exceed the current cash-risk ceiling, the worker blocks the
+trade instead of increasing risk or silently changing size. Use `weekly` for a
+Monday-to-Sunday lock or `none` for dynamic risk sizing. For FX pairs, 100,000
+units equals one standard lot; USDJPY still uses its live JPY conversion factor
+when the cash-risk ceiling is checked.
+
+The Open Trades, Journal, and Validation views reconcile saved records against
+OANDA. Changes to units, stop loss, or take profit are recorded as broker
+activity. Closed trades use the broker close time, transaction, reason, price,
+and trade-level realised P/L. Reconciliation is idempotent, so refreshing a
+view repairs missing updates without duplicating trades.
+The hosted Site and VPS worker must use the same
+`AUTOTRADER_WEBHOOK_SECRET`; otherwise worker-created journal events are
+rejected. As a fallback, refreshing Journal also recovers missing open trades
+tagged `foresight-manual` or `foresight-autotrader` at OANDA.
+
 The worker does not call the LLM on every price update. It caches reviews and
 only requests a new review after a material price move, a review interval, or
 a released high-impact event. Broker-side stop loss and take profit remain the
 primary protection. Set `LLM_BASE_URL=https://api.aoodie.xyz/v1` and choose the
 provider model with `LLM_MODEL`.
+
+Trades opened through the dashboard are tagged `foresight-manual` and are
+continuously reviewed by the VPS worker when
+`AUTOTRADER_MONITOR_DASHBOARD_TRADES=true` (the default). Their LLM decisions,
+confidence, explanation, and recommended action are synced to the journal.
+Unrelated OANDA trades are ignored. A close recommendation is advisory unless
+both `AUTOTRADER_AUTOCLOSE_ON_LLM_CLOSE=true` and
+`AUTOTRADER_AUTOCLOSE_DASHBOARD_TRADES=true` are explicitly enabled; this
+separate permission prevents dashboard trades from gaining execution authority
+silently.
 
 ### Run with systemd
 

@@ -1,11 +1,13 @@
 import { NextResponse } from "next/server";
 import { getOandaToken } from "@/lib/oanda-secret";
 import { fetchOandaCandles, OandaApiError } from "@/lib/oanda-api";
+import { isOwnerRequest } from "@/lib/owner-request";
 
 const allowed = new Set(["EUR_USD", "GBP_USD", "USD_JPY", "USD_CHF", "AUD_USD", "NZD_USD", "USD_CAD", "EUR_GBP", "EUR_JPY", "GBP_JPY", "XAU_USD", "US30_USD"]);
-const granularities = new Set(["M5", "M15", "H1", "H4"]);
+const granularities = new Set(["M5", "M15", "H1", "H4", "D"]);
 
 export async function GET(request: Request) {
+  if (!(await isOwnerRequest())) return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
   const url = new URL(request.url);
   const instrument = url.searchParams.get("instrument") ?? "EUR_USD";
   const granularity = url.searchParams.get("granularity") ?? "H1";

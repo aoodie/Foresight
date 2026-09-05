@@ -1,0 +1,1 @@
+CREATE INDEX `idx_trade_journal_events_journal_id` ON `trade_journal_events` (`journal_id`);

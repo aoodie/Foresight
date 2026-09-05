@@ -62,6 +62,7 @@ export function compactStrategyMarkets(markets: unknown[]) {
       change24h: Math.round(Number(market.change24h) * 10) / 10,
       rsi: Math.round(Number(market.rsi)),
       atrPercent: Math.round(atrPercent * 100) / 100,
+      marketRegime: market.marketRegime ?? null,
       rangePosition: Math.round(Number(market.rangePosition) * 100) / 100,
       timeframeAlignment: market.timeframeAlignment ?? null,
       confirmations: market.confirmations ?? null,

@@ -1,5 +1,7 @@
 export type OandaEnvironment = "practice" | "live";
 
+import { instrumentPricePrecision } from "./trade-risk.ts";
+
 export type NormalisedCandle = {
   time: string;
   open: number;
@@ -37,6 +39,7 @@ type OandaPricingPayload = {
     closeoutAsk?: string;
     quoteHomeConversionFactors?: { positiveUnits?: string; negativeUnits?: string };
   }>;
+  homeConversions?: Array<{ currency?: string; accountGain?: string; accountLoss?: string }>;
   errorMessage?: string;
 };
 
@@ -75,9 +78,12 @@ export async function submitOandaMarketOrder(args: {
     order: {
       type: "MARKET", instrument: args.instrument, units: String(args.units),
       timeInForce: "FOK", positionFill: "DEFAULT",
-      ...(args.clientExtensions ? { clientExtensions: args.clientExtensions } : {}),
-      ...(args.stopLoss ? { stopLossOnFill: { price: args.stopLoss.toFixed(args.instrument.endsWith("JPY") ? 3 : 5), timeInForce: "GTC" } } : {}),
-      ...(args.takeProfit ? { takeProfitOnFill: { price: args.takeProfit.toFixed(args.instrument.endsWith("JPY") ? 3 : 5), timeInForce: "GTC" } } : {}),
+      ...(args.clientExtensions ? {
+        clientExtensions: args.clientExtensions,
+        tradeClientExtensions: args.clientExtensions,
+      } : {}),
+      ...(args.stopLoss ? { stopLossOnFill: { price: args.stopLoss.toFixed(instrumentPricePrecision(args.instrument)), timeInForce: "GTC" } } : {}),
+      ...(args.takeProfit ? { takeProfitOnFill: { price: args.takeProfit.toFixed(instrumentPricePrecision(args.instrument)), timeInForce: "GTC" } } : {}),
     },
   };
   let response: Response;
@@ -87,10 +93,35 @@ export async function submitOandaMarketOrder(args: {
       body: JSON.stringify(body), cache: "no-store",
     });
   } catch { throw new OandaApiError("OANDA could not be reached. Try again shortly.", 502); }
-  const payload = (await response.json().catch(() => ({}))) as { orderFillTransaction?: { id?: string; units?: string; tradeOpened?: { tradeID?: string } }; orderCreateTransaction?: { id?: string }; orderCancelTransaction?: { reason?: string }; errorMessage?: string };
+  const payload = (await response.json().catch(() => ({}))) as {
+    orderFillTransaction?: {
+      id?: string; time?: string; units?: string; price?: string; pl?: string; reason?: string;
+      tradeOpened?: { tradeID?: string };
+      tradeReduced?: { tradeID?: string; realizedPL?: string };
+      tradesClosed?: Array<{ tradeID?: string; realizedPL?: string }>;
+    };
+    orderCreateTransaction?: { id?: string };
+    orderCancelTransaction?: { reason?: string };
+    errorMessage?: string;
+  };
   if (!response.ok) throw new OandaApiError(payload.errorMessage || `OANDA order failed (${response.status}).`, response.status);
   if (!payload.orderFillTransaction?.id) throw new OandaApiError(payload.orderCancelTransaction?.reason || "OANDA did not confirm an order fill.", 502);
-  return { orderId: payload.orderFillTransaction.id, tradeId: payload.orderFillTransaction?.tradeOpened?.tradeID ?? null, units: payload.orderFillTransaction?.units ?? String(args.units) };
+  const fill = payload.orderFillTransaction;
+  const fillPrice = Number(fill?.price);
+  const realisedPnl = Number(fill?.pl ?? fill?.tradeReduced?.realizedPL ?? 0) +
+    (fill?.tradesClosed ?? []).reduce((sum, trade) => sum + Number(trade.realizedPL ?? 0), 0);
+  return {
+    orderId: payload.orderCreateTransaction?.id ?? null,
+    fillTransactionId: fill?.id ?? null,
+    tradeId: fill?.tradeOpened?.tradeID ?? null,
+    reducedTradeId: fill?.tradeReduced?.tradeID ?? null,
+    closedTradeIds: (fill?.tradesClosed ?? []).flatMap((trade) => trade.tradeID ? [trade.tradeID] : []),
+    units: fill?.units ?? String(args.units),
+    fillPrice: Number.isFinite(fillPrice) ? fillPrice : null,
+    fillTime: fill?.time ?? null,
+    realisedPnl: Number.isFinite(realisedPnl) ? realisedPnl : 0,
+    reason: fill?.reason ?? null,
+  };
 }
 
 export async function closeOandaTrade(args: { token: string; environment: OandaEnvironment; accountId: string; tradeId: string }) {
@@ -104,10 +135,10 @@ export async function closeOandaTrade(args: { token: string; environment: OandaE
       cache: "no-store",
     });
   } catch { throw new OandaApiError("OANDA could not be reached. Try again shortly.", 502); }
-  const payload = (await response.json().catch(() => ({}))) as { orderFillTransaction?: { id?: string; pl?: string }; errorMessage?: string };
+  const payload = (await response.json().catch(() => ({}))) as { orderFillTransaction?: { id?: string; time?: string; pl?: string; price?: string; reason?: string }; errorMessage?: string };
   if (!response.ok) throw new OandaApiError(payload.errorMessage || `OANDA could not close trade (${response.status}).`, response.status);
   if (!payload.orderFillTransaction?.id) throw new OandaApiError("OANDA did not confirm that the trade was closed.", 502);
-  return { transactionId: payload.orderFillTransaction.id, pnl: Number(payload.orderFillTransaction?.pl ?? 0) };
+  return { transactionId: payload.orderFillTransaction.id, closeTime: payload.orderFillTransaction?.time ?? null, pnl: Number(payload.orderFillTransaction?.pl ?? 0), price: Number(payload.orderFillTransaction?.price ?? NaN), reason: payload.orderFillTransaction?.reason ?? null };
 }
 
 export async function fetchOandaAccountId(token: string, environment: OandaEnvironment) {
@@ -117,13 +148,18 @@ export async function fetchOandaAccountId(token: string, environment: OandaEnvir
   return accountId;
 }
 
-export function normaliseOandaPrice(payload: OandaPricingPayload) {
+export function normaliseOandaPrice(payload: OandaPricingPayload, instrument?: string) {
   const quote = payload.prices?.[0];
   const bid = Number(quote?.bids?.[0]?.price ?? quote?.closeoutBid);
   const ask = Number(quote?.asks?.[0]?.price ?? quote?.closeoutAsk);
   if (!quote?.time || !Number.isFinite(bid) || !Number.isFinite(ask)) throw new OandaApiError("OANDA returned no usable live quote.", 502);
-  const positiveUnits = Number(quote.quoteHomeConversionFactors?.positiveUnits);
-  const negativeUnits = Number(quote.quoteHomeConversionFactors?.negativeUnits);
+  const quoteCurrency = instrument?.split("_").at(-1);
+  const homeConversion = quoteCurrency ? payload.homeConversions?.find((item) => item.currency === quoteCurrency) : null;
+  const positiveUnits = Number(quote.quoteHomeConversionFactors?.positiveUnits ?? homeConversion?.accountGain);
+  const negativeUnits = Number(quote.quoteHomeConversionFactors?.negativeUnits ?? homeConversion?.accountLoss);
+  if (!Number.isFinite(positiveUnits) || positiveUnits <= 0 || !Number.isFinite(negativeUnits) || negativeUnits <= 0) {
+    throw new OandaApiError("OANDA returned no usable home-currency conversion factors.", 502);
+  }
   return {
     bid,
     ask,
@@ -133,8 +169,8 @@ export function normaliseOandaPrice(payload: OandaPricingPayload) {
     tradeable: Boolean(quote.tradeable),
     marketStatus: quote.status ?? (quote.tradeable ? "tradeable" : "closed"),
     homeConversionFactors: {
-      positiveUnits: Number.isFinite(positiveUnits) && positiveUnits > 0 ? positiveUnits : 1,
-      negativeUnits: Number.isFinite(negativeUnits) && negativeUnits > 0 ? negativeUnits : 1,
+      positiveUnits,
+      negativeUnits,
     },
   };
 }
@@ -144,7 +180,7 @@ export async function fetchOandaPrice(args: { token: string; environment: OandaE
     `https://${hostFor(args.environment)}/v3/accounts/${encodeURIComponent(args.accountId)}/pricing?instruments=${encodeURIComponent(args.instrument)}&includeHomeConversions=true`,
     args.token,
   );
-  return normaliseOandaPrice(payload);
+  return normaliseOandaPrice(payload, args.instrument);
 }
 
 export async function fetchOandaAccountSummary(args: { token: string; environment: OandaEnvironment; accountId: string }) {
@@ -179,6 +215,7 @@ type OandaOpenTradesPayload = {
     currentUnits?: string;
     initialUnits?: string;
     unrealizedPL?: string;
+    clientExtensions?: { id?: string; tag?: string; comment?: string };
     stopLossOrder?: { price?: string };
     takeProfitOrder?: { price?: string };
   }>;
@@ -201,24 +238,128 @@ export async function fetchOandaOpenTrades(args: { token: string; environment: O
       openTime: trade.openTime ?? null,
       units,
       unrealizedPL: Number(trade.unrealizedPL ?? 0),
+      clientId: trade.clientExtensions?.id ?? null,
+      clientTag: trade.clientExtensions?.tag ?? null,
+      clientComment: trade.clientExtensions?.comment ?? null,
       stopLoss: Number.isFinite(Number(trade.stopLossOrder?.price)) ? Number(trade.stopLossOrder?.price) : null,
       takeProfit: Number.isFinite(Number(trade.takeProfitOrder?.price)) ? Number(trade.takeProfitOrder?.price) : null,
     }];
   });
 }
 
+type OandaTradeDetailsPayload = {
+  trade?: {
+    id?: string;
+    instrument?: string;
+    state?: string;
+    realizedPL?: string;
+    closeTime?: string;
+    averageClosePrice?: string;
+    closingTransactionIDs?: string[];
+  };
+  errorMessage?: string;
+};
+
+export async function fetchOandaTradeDetails(args: { token: string; environment: OandaEnvironment; accountId: string; tradeId: string }) {
+  const payload = await oandaJson<OandaTradeDetailsPayload>(
+    `https://${hostFor(args.environment)}/v3/accounts/${encodeURIComponent(args.accountId)}/trades/${encodeURIComponent(args.tradeId)}`,
+    args.token,
+  );
+  const trade = payload.trade;
+  const pnl = Number(trade?.realizedPL);
+  const closePrice = Number(trade?.averageClosePrice);
+  if (!trade?.id || !trade.instrument || !trade.state) throw new OandaApiError("OANDA returned no usable trade details.", 502);
+  return {
+    id: trade.id,
+    instrument: trade.instrument,
+    state: trade.state,
+    pnl: Number.isFinite(pnl) ? pnl : null,
+    closeTime: trade.closeTime ?? null,
+    closePrice: Number.isFinite(closePrice) ? closePrice : null,
+    closingTransactionIds: trade.closingTransactionIDs ?? [],
+  };
+}
+
 type OandaTransactionPayload = {
+  count?: number;
+  pages?: string[];
   transactions?: Array<{
     id?: string;
     type?: string;
     time?: string;
     instrument?: string;
     tradeID?: string;
+    orderID?: string;
+    clientOrderID?: string;
     pl?: string;
     units?: string;
+    price?: string;
+    reason?: string;
+    tradeOpened?: {
+      tradeID?: string;
+      units?: string;
+      price?: string;
+    };
+    tradeReduced?: { tradeID?: string; realizedPL?: string };
+    tradeClosed?: { tradeID?: string; realizedPL?: string };
+    tradesClosed?: Array<{ tradeID?: string; realizedPL?: string }>;
   }>;
   errorMessage?: string;
 };
+
+function closeReasonFor(reason: string | null) {
+  if (reason === "TAKE_PROFIT_ORDER") return "TP";
+  if (reason === "STOP_LOSS_ORDER") return "SL";
+  if (reason === "TRAILING_STOP_LOSS_ORDER") return "TRAILING_STOP";
+  if (reason === "MARKET_ORDER_TRADE_CLOSE" || reason === "CLIENT_REQUEST") return "MANUAL";
+  return "BROKER";
+}
+
+export function normaliseOandaOrderFills(transactions: NonNullable<OandaTransactionPayload["transactions"]>) {
+  return transactions.flatMap((transaction) => {
+    const pnl = Number(transaction.pl ?? 0);
+    if (!transaction.id || !transaction.time || !Number.isFinite(pnl)) return [];
+    const openedTradeId = transaction.tradeOpened?.tradeID ?? null;
+    const tradeIds = [...new Set([
+      transaction.tradeID,
+      openedTradeId,
+      transaction.tradeReduced?.tradeID,
+      transaction.tradeClosed?.tradeID,
+      ...(transaction.tradesClosed ?? []).map((trade) => trade.tradeID),
+    ].filter((value): value is string => Boolean(value)))];
+    const isEntry = Boolean(openedTradeId);
+    const isClose = Boolean(transaction.tradeReduced?.tradeID || transaction.tradeClosed?.tradeID || transaction.tradesClosed?.length);
+    const reason = transaction.reason ?? null;
+    const price = Number(transaction.price ?? transaction.tradeOpened?.price);
+    const units = Number(transaction.tradeOpened?.units ?? transaction.units ?? 0);
+    const pnlByTradeId: Record<string, number> = {};
+    if (transaction.tradeReduced?.tradeID) pnlByTradeId[transaction.tradeReduced.tradeID] = Number(transaction.tradeReduced.realizedPL ?? 0);
+    if (transaction.tradeClosed?.tradeID) pnlByTradeId[transaction.tradeClosed.tradeID] = Number(transaction.tradeClosed.realizedPL ?? 0);
+    for (const trade of transaction.tradesClosed ?? []) if (trade.tradeID) pnlByTradeId[trade.tradeID] = Number(trade.realizedPL ?? 0);
+    for (const [tradeId, value] of Object.entries(pnlByTradeId)) if (!Number.isFinite(value)) delete pnlByTradeId[tradeId];
+    return [{
+      id: transaction.id,
+      time: transaction.time,
+      instrument: transaction.instrument ?? null,
+      tradeId: tradeIds[0] ?? null,
+      openedTradeId,
+      tradeIds,
+      pnlByTradeId,
+      pnl,
+      units: Number.isFinite(units) ? units : 0,
+      price: Number.isFinite(price) ? price : null,
+      reason,
+      closeReason: isClose ? closeReasonFor(reason) : null,
+      isEntry,
+      isClose,
+      clientId: transaction.clientOrderID ?? null,
+      // OANDA's historical ORDER_FILL schema carries clientOrderID but not the
+      // original extension tag/comment. Source inference uses the ID prefix.
+      clientTag: null,
+      clientComment: null,
+    }];
+  });
+}
 
 export async function fetchOandaOrderFills(args: {
   token: string;
@@ -233,33 +374,29 @@ export async function fetchOandaOrderFills(args: {
     type: "ORDER_FILL",
     pageSize: "1000",
   });
-  const baseUrl = `https://${hostFor(args.environment)}/v3/accounts/${encodeURIComponent(args.accountId)}/transactions`;
-  const index = await oandaJson<{ pages?: string[] }>(`${baseUrl}?${params.toString()}`, args.token);
-  if (!Array.isArray(index.pages)) throw new OandaApiError("OANDA returned no usable transaction history.", 502);
-  const transactions: NonNullable<OandaTransactionPayload["transactions"]> = [];
-  for (const page of index.pages) {
-    const url = new URL(page);
-    const expected = new URL(baseUrl);
-    if (url.origin !== expected.origin || url.pathname !== `${expected.pathname}/idrange` || url.username || url.password) {
-      throw new OandaApiError("OANDA returned an invalid transaction page.", 502);
+  const host = hostFor(args.environment);
+  const payload = await oandaJson<OandaTransactionPayload>(
+    `https://${hostFor(args.environment)}/v3/accounts/${encodeURIComponent(args.accountId)}/transactions?${params.toString()}`,
+    args.token,
+  );
+  const pages = payload.pages ?? [];
+  if (pages.length > 50) throw new OandaApiError("OANDA transaction history is too large to reconcile safely in one request.", 413);
+  const pagePayloads: OandaTransactionPayload[] = [];
+  for (const page of pages) {
+    let url: URL;
+    try { url = new URL(page); } catch { throw new OandaApiError("OANDA returned an invalid transaction page URL.", 502); }
+    const expectedPrefix = `/v3/accounts/${encodeURIComponent(args.accountId)}/transactions/idrange`;
+    if (url.origin !== `https://${host}` || url.username || url.password || url.pathname !== expectedPrefix) {
+      throw new OandaApiError("OANDA returned an invalid transaction page URL.", 502);
     }
     url.searchParams.set("type", "ORDER_FILL");
-    const payload = await oandaJson<OandaTransactionPayload>(url.toString(), args.token);
-    if (!Array.isArray(payload.transactions)) throw new OandaApiError("OANDA returned no usable transaction page.", 502);
-    transactions.push(...payload.transactions);
+    pagePayloads.push(await oandaJson<OandaTransactionPayload>(url.toString(), args.token));
   }
-  return transactions.filter((transaction) => transaction.type === "ORDER_FILL").flatMap((transaction) => {
-    const pnl = Number(transaction.pl ?? 0);
-    if (!transaction.id || !transaction.time || !Number.isFinite(pnl)) return [];
-    return [{
-      id: transaction.id,
-      time: transaction.time,
-      instrument: transaction.instrument ?? null,
-      tradeId: transaction.tradeID ?? null,
-      pnl,
-      units: Number(transaction.units ?? 0),
-    }];
-  });
+  const transactions = [
+    ...(payload.transactions ?? []),
+    ...pagePayloads.flatMap((page) => page.transactions ?? []),
+  ];
+  return normaliseOandaOrderFills(transactions.filter((transaction) => !transaction.type || transaction.type === "ORDER_FILL"));
 }
 
 export function normaliseOandaPayload(payload: OandaCandlePayload) {

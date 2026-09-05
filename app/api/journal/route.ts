@@ -1,7 +1,8 @@
 import { headers } from "next/headers";
 import { NextResponse } from "next/server";
-import { createJournalEntry, updateJournalEntry } from "@/lib/trading-records";
+import { backfillJournalLifecycleEvents, createJournalEntry, reconcileJournalFromBrokerSnapshot, updateJournalEntry } from "@/lib/trading-records";
 import { getOandaToken } from "@/lib/oanda-secret";
+import { fetchOandaOpenTrades, fetchOandaOrderFills } from "@/lib/oanda-api";
 import { env } from "cloudflare:workers";
 
 async function ownerRequest() { return Boolean((await headers()).get("oai-authenticated-user-email")); }
@@ -9,9 +10,29 @@ const runtime = env as unknown as { DB: D1Database };
 
 export async function GET(request: Request) {
   if (!(await ownerRequest())) return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
-  const limit = Math.min(200, Math.max(1, Number(new URL(request.url).searchParams.get("limit") ?? 100) || 100));
-  const rows = await runtime.DB.prepare("SELECT * FROM trade_journal ORDER BY created_at DESC LIMIT ?").bind(limit).all();
-  return NextResponse.json({ entries: rows.results ?? [] });
+  const searchParams = new URL(request.url).searchParams;
+  const limit = Math.min(200, Math.max(1, Number(searchParams.get("limit") ?? 100) || 100));
+  let reconciliation: Awaited<ReturnType<typeof reconcileJournalFromBrokerSnapshot>> | null = null;
+  let reconciliationError: string | null = null;
+  if (searchParams.get("reconcile") === "1") {
+    try {
+      const connection = await getOandaToken();
+      if (!connection?.accountId) throw new Error("OANDA is not connected, so broker reconciliation was skipped.");
+      const [openTrades, fills] = await Promise.all([
+        fetchOandaOpenTrades({ token: connection.token, environment: connection.environment, accountId: connection.accountId }),
+        fetchOandaOrderFills({ token: connection.token, environment: connection.environment, accountId: connection.accountId, from: new Date(Date.now() - 180 * 24 * 60 * 60 * 1000) }),
+      ]);
+      reconciliation = await reconcileJournalFromBrokerSnapshot({ openTrades, fills, environment: connection.environment, accountId: connection.accountId });
+    } catch (error) {
+      reconciliationError = error instanceof Error ? error.message : "Broker reconciliation failed.";
+    }
+  }
+  const lifecycleBackfilled = await backfillJournalLifecycleEvents(limit);
+  const [rows, eventCount] = await Promise.all([
+    runtime.DB.prepare("SELECT * FROM trade_journal ORDER BY COALESCE(opened_at, created_at) DESC LIMIT ?").bind(limit).all(),
+    runtime.DB.prepare("SELECT COUNT(*) AS count FROM trade_journal_events").first<{ count: number }>(),
+  ]);
+  return NextResponse.json({ entries: rows.results ?? [], reconciliation, reconciliationError, lifecycleBackfilled, lifecycleEventCount: Number(eventCount?.count ?? 0) });
 }
 
 export async function POST(request: Request) {

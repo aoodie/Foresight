@@ -1,4 +1,4 @@
-import { integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { index, integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 export const oandaConnection = sqliteTable("oanda_connection", {
   id: text("id").primaryKey(),
@@ -48,6 +48,26 @@ export const tradeJournal = sqliteTable("trade_journal", {
   closedAt: text("closed_at"),
   metadataJson: text("metadata_json"),
 });
+
+// Immutable lifecycle evidence for each journal record. Current trade state
+// remains in trade_journal for fast reads; this table preserves how it changed.
+export const tradeJournalEvents = sqliteTable("trade_journal_events", {
+  id: text("id").primaryKey(),
+  eventKey: text("event_key").notNull().unique(),
+  journalId: text("journal_id").notNull(),
+  brokerTradeId: text("broker_trade_id"),
+  eventType: text("event_type").notNull(),
+  eventAt: text("event_at").notNull(),
+  source: text("source").notNull(),
+  status: text("status"),
+  price: real("price"),
+  pnl: real("pnl"),
+  reason: text("reason"),
+  metadataJson: text("metadata_json"),
+  createdAt: text("created_at").notNull(),
+}, (table) => [
+  index("idx_trade_journal_events_journal_id").on(table.journalId),
+]);
 
 export const systemLogs = sqliteTable("system_logs", {
   id: text("id").primaryKey(),

@@ -1,9 +1,10 @@
 import { env } from "cloudflare:workers";
 import { NextResponse } from "next/server";
-import { createJournalEntry, updateJournalByBrokerTradeId, writeSystemLog } from "@/lib/trading-records";
+import { createJournalEntry, updateJournalByBrokerTradeId, updateJournalEntry, writeSystemLog } from "@/lib/trading-records";
 
 type RuntimeEnv = { AUTOTRADER_WEBHOOK_SECRET?: string };
 const runtime = env as unknown as RuntimeEnv;
+const journalStatuses = new Set(["planned", "submitted", "open", "closed", "cancelled", "win", "loss", "breakeven", "reconciliation_required"]);
 
 function sameSecret(left: string, right: string) {
   if (!left || left.length !== right.length) return false;
@@ -14,6 +15,14 @@ function sameSecret(left: string, right: string) {
 
 function stringOrNull(value: unknown) { return typeof value === "string" && value.length <= 4000 ? value : null; }
 function numberOrNull(value: unknown) { return typeof value === "number" && Number.isFinite(value) ? value : null; }
+function closeMetadata(payload: Record<string, unknown>) {
+  const metadata: Record<string, unknown> = {};
+  if (typeof payload.closeReason === "string") metadata.closeReason = payload.closeReason;
+  if (typeof payload.closePrice === "number" && Number.isFinite(payload.closePrice)) metadata.closePrice = payload.closePrice;
+  if (typeof payload.closeTransactionId === "string") metadata.closeTransactionId = payload.closeTransactionId;
+  if (typeof payload.closeTime === "string") metadata.closeTime = payload.closeTime;
+  return Object.keys(metadata).length ? metadata : undefined;
+}
 
 export async function POST(request: Request) {
   const configuredSecret = runtime.AUTOTRADER_WEBHOOK_SECRET;
@@ -21,6 +30,7 @@ export async function POST(request: Request) {
   if (!configuredSecret || !sameSecret(suppliedSecret, configuredSecret)) return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
   const body = await request.json().catch(() => null) as { type?: string; payload?: Record<string, unknown> } | null;
   if (!body?.type || !body.payload || typeof body.payload !== "object") return NextResponse.json({ error: "Invalid autonomous-worker event." }, { status: 400 });
+  if (JSON.stringify(body).length > 256_000) return NextResponse.json({ error: "Autonomous-worker event is too large." }, { status: 413 });
   const payload = body.payload;
   if (body.type === "log") {
     await writeSystemLog({
@@ -37,15 +47,34 @@ export async function POST(request: Request) {
   if (body.type === "journal.create") {
     const required = ["id", "environment", "accountId", "instrument", "direction", "style"];
     if (!required.every((key) => typeof payload[key] === "string")) return NextResponse.json({ error: "Journal event is missing required fields." }, { status: 400 });
+    if (!/^[A-Z0-9]{2,12}_[A-Z0-9]{2,12}$/.test(String(payload.instrument)) || !["long", "short"].includes(String(payload.direction)) || !["practice", "live"].includes(String(payload.environment)) || !journalStatuses.has(String(payload.status ?? "open"))) {
+      return NextResponse.json({ error: "Journal event contains an invalid instrument, direction, environment or status." }, { status: 400 });
+    }
     const id = await createJournalEntry({
       id: String(payload.id), environment: String(payload.environment), accountId: String(payload.accountId), instrument: String(payload.instrument), direction: String(payload.direction), style: String(payload.style),
-      strategyName: stringOrNull(payload.strategyName), setupType: stringOrNull(payload.setupType), status: stringOrNull(payload.status) ?? "open", entryPrice: numberOrNull(payload.entryPrice), stopLoss: numberOrNull(payload.stopLoss), takeProfit1: numberOrNull(payload.takeProfit1), takeProfit2: numberOrNull(payload.takeProfit2), units: numberOrNull(payload.units), lots: numberOrNull(payload.lots), riskPercent: numberOrNull(payload.riskPercent), riskAmount: numberOrNull(payload.riskAmount), brokerTradeId: stringOrNull(payload.brokerTradeId), thesis: stringOrNull(payload.thesis), evidence: stringOrNull(payload.evidence), invalidation: stringOrNull(payload.invalidation), metadata: payload.metadata,
+      strategyName: stringOrNull(payload.strategyName), setupType: stringOrNull(payload.setupType), status: stringOrNull(payload.status) ?? "open", entryPrice: numberOrNull(payload.entryPrice), stopLoss: numberOrNull(payload.stopLoss), takeProfit1: numberOrNull(payload.takeProfit1), takeProfit2: numberOrNull(payload.takeProfit2), units: numberOrNull(payload.units), lots: numberOrNull(payload.lots), riskPercent: numberOrNull(payload.riskPercent), riskAmount: numberOrNull(payload.riskAmount), pnl: numberOrNull(payload.pnl), brokerTradeId: stringOrNull(payload.brokerTradeId), thesis: stringOrNull(payload.thesis), evidence: stringOrNull(payload.evidence), invalidation: stringOrNull(payload.invalidation), openedAt: stringOrNull(payload.openedAt), closedAt: stringOrNull(payload.closedAt), metadata: payload.metadata,
     });
     return NextResponse.json({ ok: true, id });
   }
+  if (body.type === "journal.activity") {
+    if (typeof payload.brokerTradeId !== "string" || !payload.metadata || typeof payload.metadata !== "object") {
+      return NextResponse.json({ error: "Journal activity is missing its broker trade ID or metadata." }, { status: 400 });
+    }
+    const matched = typeof payload.journalId === "string"
+      ? await updateJournalEntry({ id: payload.journalId, status: "open", brokerTradeId: payload.brokerTradeId, notes: stringOrNull(payload.notes), metadata: payload.metadata as Record<string, unknown> })
+      : await updateJournalByBrokerTradeId({ brokerTradeId: payload.brokerTradeId, status: "open", notes: stringOrNull(payload.notes), metadata: payload.metadata as Record<string, unknown> });
+    if (!matched) return NextResponse.json({ error: "The journal record for this broker activity was not found." }, { status: 404 });
+    return NextResponse.json({ ok: true });
+  }
   if (body.type === "journal.update") {
     if (typeof payload.brokerTradeId !== "string" || typeof payload.status !== "string") return NextResponse.json({ error: "Journal update is missing brokerTradeId or status." }, { status: 400 });
-    await updateJournalByBrokerTradeId({ brokerTradeId: payload.brokerTradeId, status: payload.status, pnl: numberOrNull(payload.pnl), notes: stringOrNull(payload.notes) });
+    if (!journalStatuses.has(payload.status)) return NextResponse.json({ error: "Journal update contains an invalid status." }, { status: 400 });
+    if (typeof payload.journalId === "string") {
+      const matched = await updateJournalEntry({ id: payload.journalId, status: payload.status, pnl: numberOrNull(payload.pnl), brokerTradeId: payload.brokerTradeId, notes: stringOrNull(payload.notes), closedAt: stringOrNull(payload.closeTime), metadata: closeMetadata(payload) });
+      if (!matched) await updateJournalByBrokerTradeId({ brokerTradeId: payload.brokerTradeId, status: payload.status, pnl: numberOrNull(payload.pnl), notes: stringOrNull(payload.notes), closedAt: stringOrNull(payload.closeTime), metadata: closeMetadata(payload) });
+    } else {
+      await updateJournalByBrokerTradeId({ brokerTradeId: payload.brokerTradeId, status: payload.status, pnl: numberOrNull(payload.pnl), notes: stringOrNull(payload.notes), closedAt: stringOrNull(payload.closeTime), metadata: closeMetadata(payload) });
+    }
     return NextResponse.json({ ok: true });
   }
   return NextResponse.json({ error: "Unsupported autonomous-worker event." }, { status: 400 });

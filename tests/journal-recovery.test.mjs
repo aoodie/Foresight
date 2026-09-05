@@ -1,0 +1,54 @@
+import assert from "node:assert/strict";
+import test, { after } from "node:test";
+import { fileURLToPath } from "node:url";
+import { createServer } from "vite";
+
+const root = fileURLToPath(new URL("..", import.meta.url));
+const vite = await createServer({ appType: "custom", configFile: false, root, resolve: { alias: { "@": root } }, server: { middlewareMode: true } });
+after(async () => vite.close());
+
+test("recovers a tagged Foresight trade that opened and closed before reconciliation", async () => {
+  const { missingJournalRecordsFromFills } = await vite.ssrLoadModule("/lib/journal-recovery.ts");
+  const fills = [
+    { id: "101", time: "2026-08-31T08:00:00.000Z", instrument: "USD_JPY", openedTradeId: "102", tradeIds: ["102"], pnl: 0, units: 10000, price: 147.2, closeReason: null, isEntry: true, isClose: false, clientId: "foresight-abc", clientTag: "foresight-autotrader", clientComment: "intraday:daily" },
+    { id: "110", time: "2026-08-31T09:00:00.000Z", instrument: "USD_JPY", openedTradeId: null, tradeIds: ["102"], pnl: 25, pnlByTradeId: { "102": 25 }, units: -10000, price: 147.4, closeReason: "TP", isEntry: false, isClose: true },
+  ];
+  const records = missingJournalRecordsFromFills({ openTrades: [], fills, knownBrokerIds: new Set(), environment: "practice", accountId: "account" });
+  assert.equal(records.length, 1);
+  assert.equal(records[0].brokerTradeId, "102");
+  assert.equal(records[0].status, "closed");
+  assert.equal(records[0].pnl, 25);
+  assert.equal(records[0].metadata.closeReason, "TP");
+  assert.equal(records[0].direction, "long");
+});
+
+test("recovers untagged account trades as Foresight project trades and still ignores known IDs", async () => {
+  const { missingJournalRecordsFromFills } = await vite.ssrLoadModule("/lib/journal-recovery.ts");
+  const base = { id: "1", time: "2026-08-31T08:00:00.000Z", instrument: "EUR_USD", openedTradeId: "2", tradeIds: ["2"], pnl: 0, units: 1000, price: 1.1, closeReason: null, isEntry: true, isClose: false };
+  const records = missingJournalRecordsFromFills({ openTrades: [], fills: [base], knownBrokerIds: new Set(), environment: "practice" });
+  assert.equal(records.length, 1);
+  assert.equal(records[0].strategyName, "Foresight project recovery");
+  assert.equal(records[0].metadata.source, "project_recovery");
+  assert.equal(records[0].metadata.recoverySource, "project_entry_fill");
+  assert.deepEqual(missingJournalRecordsFromFills({ openTrades: [], fills: [{ ...base, clientTag: "foresight-manual" }], knownBrokerIds: new Set(["2"]), environment: "practice" }), []);
+});
+
+test("attributes historical fills from their OANDA client order ID", async () => {
+  const { missingJournalRecordsFromFills } = await vite.ssrLoadModule("/lib/journal-recovery.ts");
+  const autonomous = { id: "201", time: "2026-09-03T00:00:00.000Z", instrument: "GBP_USD", openedTradeId: "202", tradeIds: ["202"], pnl: 0, units: -25000, price: 1.35, closeReason: null, isEntry: true, isClose: false, clientId: "foresight-a1b2c3" };
+  const dashboard = { ...autonomous, id: "203", openedTradeId: "204", tradeIds: ["204"], clientId: "foresight-ui-journal-record" };
+  const records = missingJournalRecordsFromFills({ openTrades: [], fills: [autonomous, dashboard], knownBrokerIds: new Set(), environment: "practice" });
+  assert.equal(records[0].strategyName, "Autotrader recovery");
+  assert.equal(records[0].metadata.source, "autonomous");
+  assert.equal(records[1].strategyName, "Dashboard trade recovery");
+  assert.equal(records[1].metadata.source, "dashboard_manual");
+});
+
+test("recovers directly into the journal ID carried by a new Foresight order", async () => {
+  const { missingJournalRecordsFromFills } = await vite.ssrLoadModule("/lib/journal-recovery.ts");
+  const journalId = "c5a62dcc-bfc8-4b8a-a98f-7dca717339ec";
+  const fill = { id: "301", time: "2026-09-03T01:00:00.000Z", instrument: "EUR_USD", openedTradeId: "302", tradeIds: ["302"], pnl: 0, units: 12000, price: 1.17, closeReason: null, isEntry: true, isClose: false, clientId: `foresight-at-${journalId}` };
+  const records = missingJournalRecordsFromFills({ openTrades: [], fills: [fill], knownBrokerIds: new Set(), environment: "practice" });
+  assert.equal(records[0].id, journalId);
+  assert.equal(records[0].metadata.source, "autonomous");
+});

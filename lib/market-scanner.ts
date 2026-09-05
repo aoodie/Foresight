@@ -1,6 +1,45 @@
 import type { NormalisedCandle } from "./oanda-api.ts";
 
+export const STRATEGY_VERSION = "scanner-v1.3.0";
+
+export type MarketRegime = {
+  type: "trending" | "ranging" | "breakout" | "volatile" | "compression";
+  direction: "bullish" | "bearish" | "neutral";
+  volatility: "low" | "normal" | "high";
+  label: string;
+  confidence: number;
+  explanation: string;
+  playbook: string;
+};
+
+export type SupportResistanceZone = {
+  kind: "support" | "resistance";
+  timeframe: string;
+  low: number;
+  high: number;
+  midpoint: number;
+  touches: number;
+  strength: number;
+  distanceAtr: number;
+};
+
+export type PendingOrderPlan = {
+  orderType: "buy_limit" | "buy_stop" | "sell_limit" | "sell_stop";
+  setup: "pullback" | "breakout";
+  status: "watch" | "blocked";
+  entry: number;
+  stopLoss: number;
+  takeProfit: number;
+  riskReward: number;
+  zone: SupportResistanceZone;
+  rationale: string;
+  confirmation: string;
+  expiry: string;
+  warning: string | null;
+};
+
 export type ScannerResult = {
+  strategyVersion: string;
   instrument: string;
   label: string;
   assetClass: "forex" | "metal" | "index";
@@ -10,6 +49,7 @@ export type ScannerResult = {
   change24h: number;
   rsi: number;
   atrPercent: number;
+  marketRegime: MarketRegime;
   rangePosition: number;
   entry: number | null;
   stopLoss: number | null;
@@ -17,6 +57,7 @@ export type ScannerResult = {
   takeProfit2: number | null;
   riskReward1: number | null;
   riskReward2: number | null;
+  technicalStructure: string;
   analysis: string;
   reasons: string[];
   invalidation: string;
@@ -29,6 +70,12 @@ export type ScannerResult = {
     score: number;
   }>;
   confirmations?: number;
+  supportResistance?: {
+    support: SupportResistanceZone | null;
+    resistance: SupportResistanceZone | null;
+    priceInsideZone: SupportResistanceZone | null;
+  };
+  pendingOrderPlans?: PendingOrderPlan[];
   strategies?: StrategyEvidence[];
   selectedStrategy?: StrategyEvidence;
 };
@@ -65,12 +112,18 @@ export const timeframeProfiles: Record<
     frames: ["H4", "H1", "M15"],
   },
   swing: {
-    context: "H4",
-    setup: "H1",
-    trigger: "M15",
-    frames: ["H4", "H1", "M15"],
+    context: "D",
+    setup: "H4",
+    trigger: "H1",
+    frames: ["D", "H4", "H1"],
   },
 };
+
+export function candleCountForGranularity(granularity: string) {
+  if (granularity === "M5") return 300;
+  if (granularity === "M15") return 100;
+  return 80;
+}
 
 function ema(values: number[], period: number) {
   const multiplier = 2 / (period + 1);
@@ -91,6 +144,7 @@ function rsi(values: number[], period = 14) {
     changes.reduce((sum, value) => sum + Math.max(value, 0), 0) / period;
   const losses =
     changes.reduce((sum, value) => sum + Math.max(-value, 0), 0) / period;
+  if (!gains && !losses) return 50;
   if (!losses) return 100;
   return 100 - 100 / (1 + gains / losses);
 }
@@ -109,22 +163,194 @@ function atr(candles: NormalisedCandle[], period = 14) {
   return ranges.reduce((sum, value) => sum + value, 0) / ranges.length;
 }
 
+export function classifyMarketRegime(candlesInput: NormalisedCandle[]): MarketRegime {
+  const candles = candlesInput.filter((candle) => candle.complete);
+  if (candles.length < 55) throw new Error("At least 55 completed candles are required for regime classification.");
+  const closes = candles.map((candle) => candle.close);
+  const currentAtr = atr(candles);
+  const ema20 = ema(closes.slice(-50), 20);
+  const ema50 = ema(closes, 50);
+  const recentCloses = closes.slice(-21);
+  const path = recentCloses.slice(1).reduce((sum, close, index) => sum + Math.abs(close - recentCloses[index]), 0);
+  const efficiency = path > 0 ? Math.abs(recentCloses.at(-1)! - recentCloses[0]) / path : 0;
+  const trueRanges = candles.slice(-43).slice(1).map((candle, index) => {
+    const previous = candles.slice(-43)[index];
+    return Math.max(candle.high - candle.low, Math.abs(candle.high - previous.close), Math.abs(candle.low - previous.close));
+  });
+  const baselineRanges = trueRanges.slice(0, -14);
+  const baselineAtr = baselineRanges.length ? baselineRanges.reduce((sum, value) => sum + value, 0) / baselineRanges.length : currentAtr;
+  const volatilityRatio = baselineAtr > 0 ? currentAtr / baselineAtr : 1;
+  const trendStrength = currentAtr > 0 ? Math.abs(ema20 - ema50) / currentAtr : 0;
+  const last = candles.at(-1)!;
+  const prior = candles.slice(-21, -1);
+  const breaksHigh = last.close > Math.max(...prior.map((candle) => candle.high));
+  const breaksLow = last.close < Math.min(...prior.map((candle) => candle.low));
+  const direction = ema20 > ema50 && last.close > ema20 ? "bullish" : ema20 < ema50 && last.close < ema20 ? "bearish" : "neutral";
+  const volatility = volatilityRatio >= 1.25 ? "high" : volatilityRatio <= 0.8 ? "low" : "normal";
+  const percent = (value: number) => `${Math.round(value * 100)}%`;
+
+  if ((breaksHigh || breaksLow) && volatilityRatio >= 0.95) {
+    const breakoutDirection = breaksHigh ? "bullish" : "bearish";
+    return {
+      type: "breakout", direction: breakoutDirection, volatility,
+      label: `${breakoutDirection === "bullish" ? "Bullish" : "Bearish"} breakout`,
+      confidence: Math.round(Math.min(95, 62 + efficiency * 24 + Math.max(0, volatilityRatio - 1) * 18)),
+      explanation: `Price closed beyond its prior 20-candle ${breaksHigh ? "high" : "low"}; directional efficiency is ${percent(efficiency)} and ATR is ${volatilityRatio.toFixed(2)}× its baseline.`,
+      playbook: "Wait for acceptance or a controlled retest. Do not chase the first expansion candle.",
+    };
+  }
+  if (trendStrength >= 0.65 && efficiency >= 0.28 && direction !== "neutral") {
+    return {
+      type: "trending", direction, volatility,
+      label: `${direction === "bullish" ? "Bull" : "Bear"} trend`,
+      confidence: Math.round(Math.min(95, 55 + trendStrength * 18 + efficiency * 28)),
+      explanation: `The 20/50 EMA separation is ${trendStrength.toFixed(2)} ATR and price travelled with ${percent(efficiency)} directional efficiency.`,
+      playbook: "Prefer pullbacks and continuation entries with the trend. Avoid fading the move without a confirmed reversal.",
+    };
+  }
+  if (volatilityRatio <= 0.78) {
+    return {
+      type: "compression", direction: "neutral", volatility: "low", label: "Compression",
+      confidence: Math.round(Math.min(95, 58 + (0.78 - volatilityRatio) * 90)),
+      explanation: `ATR has contracted to ${volatilityRatio.toFixed(2)}× its recent baseline and price is not moving efficiently.`,
+      playbook: "Stand aside until price closes outside the range with confirmation; prepare both breakout directions.",
+    };
+  }
+  if (volatilityRatio >= 1.3) {
+    return {
+      type: "volatile", direction, volatility: "high", label: "Volatility spike",
+      confidence: Math.round(Math.min(95, 60 + (volatilityRatio - 1.3) * 35 + (1 - efficiency) * 12)),
+      explanation: `ATR is ${volatilityRatio.toFixed(2)}× its baseline, but directional efficiency is only ${percent(efficiency)}.`,
+      playbook: "Use risk-based sizing, require stronger confirmation, and avoid entries in the middle of wide candles.",
+    };
+  }
+  return {
+    type: "ranging", direction: "neutral", volatility, label: "Range",
+    confidence: Math.round(Math.min(90, 55 + (1 - efficiency) * 25 + Math.max(0, 0.65 - trendStrength) * 15)),
+    explanation: `Directional efficiency is ${percent(efficiency)} and EMA separation is only ${trendStrength.toFixed(2)} ATR, so neither side has sustained control.`,
+    playbook: "Trade only confirmed reactions at support or resistance. Avoid entries near the middle of the range.",
+  };
+}
+
+export function detectSupportResistanceZones(args: {
+  candles: NormalisedCandle[];
+  timeframe: string;
+  currentPrice?: number;
+}): SupportResistanceZone[] {
+  const candles = args.candles.filter((candle) => candle.complete).slice(-100);
+  if (candles.length < 15) return [];
+  const currentPrice = args.currentPrice ?? candles.at(-1)!.close;
+  const currentAtr = atr(candles);
+  if (!Number.isFinite(currentAtr) || currentAtr <= 0) return [];
+  const pivots: Array<{ price: number; index: number }> = [];
+  for (let index = 2; index < candles.length - 2; index += 1) {
+    const candle = candles[index];
+    const neighbours = candles.slice(index - 2, index + 3);
+    if (candle.high === Math.max(...neighbours.map((item) => item.high))) pivots.push({ price: candle.high, index });
+    if (candle.low === Math.min(...neighbours.map((item) => item.low))) pivots.push({ price: candle.low, index });
+  }
+  if (pivots.length < 2) {
+    const recent = candles.slice(-20);
+    pivots.push(
+      { price: Math.min(...recent.map((candle) => candle.low)), index: candles.length - 1 },
+      { price: Math.max(...recent.map((candle) => candle.high)), index: candles.length - 1 },
+    );
+  }
+  const clusterDistance = currentAtr * 0.45;
+  const clusters: Array<Array<{ price: number; index: number }>> = [];
+  for (const pivot of [...pivots].sort((a, b) => a.price - b.price)) {
+    const cluster = clusters.find((items) => {
+      const centre = items.reduce((sum, item) => sum + item.price, 0) / items.length;
+      return Math.abs(pivot.price - centre) <= clusterDistance;
+    });
+    if (cluster) cluster.push(pivot);
+    else clusters.push([pivot]);
+  }
+  return clusters.map((items) => {
+    const midpoint = items.reduce((sum, item) => sum + item.price, 0) / items.length;
+    const halfWidth = Math.max(currentAtr * 0.18, (Math.max(...items.map((item) => item.price)) - Math.min(...items.map((item) => item.price))) / 2);
+    const recency = Math.max(...items.map((item) => item.index)) / Math.max(1, candles.length - 1);
+    return {
+      kind: midpoint <= currentPrice ? "support" as const : "resistance" as const,
+      timeframe: args.timeframe,
+      low: midpoint - halfWidth,
+      high: midpoint + halfWidth,
+      midpoint,
+      touches: items.length,
+      strength: Math.round(Math.min(100, 28 + items.length * 14 + recency * 18)),
+      distanceAtr: Math.abs(currentPrice - midpoint) / currentAtr,
+    };
+  }).sort((a, b) => Math.abs(currentPrice - a.midpoint) - Math.abs(currentPrice - b.midpoint));
+}
+
+export function buildPendingOrderPlans(args: {
+  bias: "long" | "short" | "neutral";
+  price: number;
+  atr: number;
+  support: SupportResistanceZone | null;
+  resistance: SupportResistanceZone | null;
+  inside: SupportResistanceZone | null;
+  mode: TimeframeMode;
+}): PendingOrderPlan[] {
+  if (args.bias === "neutral" || !args.support || !args.resistance || args.atr <= 0) return [];
+  const buffer = args.atr * 0.15;
+  const expiry = args.mode === "scalping" ? "6 trigger candles" : args.mode === "intraday" ? "4 trigger candles" : "3 trigger candles";
+  const build = (input: Omit<PendingOrderPlan, "status" | "riskReward" | "expiry" | "warning">): PendingOrderPlan => {
+    const risk = Math.abs(input.entry - input.stopLoss);
+    const reward = Math.abs(input.takeProfit - input.entry);
+    const riskReward = risk > 0 ? reward / risk : 0;
+    const wrongSide = args.bias === "long"
+      ? input.stopLoss >= input.entry || input.takeProfit <= input.entry
+      : input.stopLoss <= input.entry || input.takeProfit >= input.entry;
+    const warning = args.inside
+      ? `Price is currently inside a ${args.inside.timeframe} ${args.inside.kind} zone. Wait for price to leave and confirm direction.`
+      : wrongSide
+        ? "The available opposing zone does not provide valid protective levels."
+        : riskReward < 1.5
+          ? `Projected reward is only ${riskReward.toFixed(1)}R; minimum is 1.5R.`
+          : null;
+    return { ...input, riskReward, expiry, status: warning ? "blocked" : "watch", warning };
+  };
+  if (args.bias === "long") {
+    const limitEntry = args.support.high;
+    const limitStop = args.support.low - buffer;
+    const stopEntry = args.resistance.high + buffer;
+    const stopStop = args.resistance.low - buffer;
+    return [
+      build({ orderType: "buy_limit", setup: "pullback", entry: limitEntry, stopLoss: limitStop, takeProfit: args.resistance.midpoint, zone: args.support, rationale: "Buy a controlled retest of confirmed support in the higher-timeframe bullish direction.", confirmation: "Activate only after a bullish rejection closes above the support zone; use the limit on the subsequent retest." }),
+      build({ orderType: "buy_stop", setup: "breakout", entry: stopEntry, stopLoss: stopStop, takeProfit: stopEntry + (stopEntry - stopStop) * 2, zone: args.resistance, rationale: "Buy only if resistance breaks and price demonstrates acceptance above the zone.", confirmation: "Require a full trigger candle to close above resistance; a wick through the zone is not confirmation." }),
+    ];
+  }
+  const limitEntry = args.resistance.low;
+  const limitStop = args.resistance.high + buffer;
+  const stopEntry = args.support.low - buffer;
+  const stopStop = args.support.high + buffer;
+  return [
+    build({ orderType: "sell_limit", setup: "pullback", entry: limitEntry, stopLoss: limitStop, takeProfit: args.support.midpoint, zone: args.resistance, rationale: "Sell a controlled retest of confirmed resistance in the higher-timeframe bearish direction.", confirmation: "Activate only after a bearish rejection closes below the resistance zone; use the limit on the subsequent retest." }),
+    build({ orderType: "sell_stop", setup: "breakout", entry: stopEntry, stopLoss: stopStop, takeProfit: stopEntry - (stopStop - stopEntry) * 2, zone: args.support, rationale: "Sell only if support breaks and price demonstrates acceptance below the zone.", confirmation: "Require a full trigger candle to close below support; a wick through the zone is not confirmation." }),
+  ];
+}
+
 export function analyseInstrument(args: {
   instrument: string;
   label: string;
   assetClass: "forex" | "metal" | "index";
   candles: NormalisedCandle[];
 }): ScannerResult {
-  if (args.candles.length < 55)
-    throw new Error("At least 55 candles are required for scanning.");
   const candles = args.candles.filter((candle) => candle.complete);
+  if (candles.length < 55)
+    throw new Error("At least 55 completed candles are required for scanning.");
   const closes = candles.map((candle) => candle.close);
   const price = closes.at(-1)!;
   const ema20 = ema(closes.slice(-50), 20);
   const ema50 = ema(closes, 50);
   const currentRsi = rsi(closes);
   const currentAtr = atr(candles);
-  const changeBase = closes.at(-7) ?? closes[0];
+  const marketRegime = classifyMarketRegime(candles);
+  const latestTime = new Date(candles.at(-1)!.time).getTime();
+  const comparisonTime = latestTime - 24 * 60 * 60 * 1000;
+  const comparisonCandle = [...candles].reverse().find((candle) => new Date(candle.time).getTime() <= comparisonTime) ?? candles[0];
+  const changeBase = comparisonCandle.close;
   const change24h = ((price - changeBase) / changeBase) * 100;
   const momentum = currentAtr ? (price - changeBase) / currentAtr : 0;
   const recent = candles.slice(-7);
@@ -134,8 +360,8 @@ export function analyseInstrument(args: {
     high === low ? 50 : ((price - low) / (high - low)) * 100;
 
   let directional = 0;
-  directional += price > ema20 ? 25 : -25;
-  directional += ema20 > ema50 ? 25 : -25;
+  directional += price > ema20 ? 25 : price < ema20 ? -25 : 0;
+  directional += ema20 > ema50 ? 25 : ema20 < ema50 ? -25 : 0;
   directional += Math.max(-25, Math.min(25, momentum * 12));
   directional += Math.max(-15, Math.min(15, (currentRsi - 50) * 0.75));
 
@@ -148,6 +374,12 @@ export function analyseInstrument(args: {
       : price < ema20 && ema20 < ema50
         ? "clear downward trend"
         : "mixed trend";
+  const technicalStructure =
+    price > ema20 && ema20 > ema50
+      ? "price is above the 20-EMA and the 20-EMA is above the 50-EMA"
+      : price < ema20 && ema20 < ema50
+        ? "price is below the 20-EMA and the 20-EMA is below the 50-EMA"
+        : "price and the 20/50-EMA structure are not fully aligned";
   const momentumLabel =
     Math.abs(momentum) >= 0.8
       ? "moving strongly"
@@ -211,6 +443,7 @@ export function analyseInstrument(args: {
       : "Ignore this idea if a four-hour candle closes firmly against the trend or the short-term trend turns the other way.";
 
   return {
+    strategyVersion: STRATEGY_VERSION,
     instrument: args.instrument,
     label: args.label,
     assetClass: args.assetClass,
@@ -220,6 +453,7 @@ export function analyseInstrument(args: {
     change24h,
     rsi: currentRsi,
     atrPercent: (currentAtr / price) * 100,
+    marketRegime,
     rangePosition,
     entry,
     stopLoss,
@@ -227,6 +461,7 @@ export function analyseInstrument(args: {
     takeProfit2,
     riskReward1: direction ? 1.5 : null,
     riskReward2: direction ? 2.5 : null,
+    technicalStructure,
     analysis,
     reasons,
     invalidation,
@@ -246,6 +481,8 @@ export function combineTimeframes(args: {
   const profile = timeframeProfiles[args.mode];
   const context =
     args.analyses[profile.context] ?? args.analyses[profile.frames[0]];
+  const trigger =
+    args.analyses[profile.trigger] ?? args.analyses[profile.frames.at(-1)!];
   const alignment = profile.frames.map((timeframe) => ({
     timeframe,
     bias: args.analyses[timeframe]?.bias ?? "neutral",
@@ -264,6 +501,9 @@ export function combineTimeframes(args: {
     alignedBias === "neutral"
       ? Math.max(longCount, shortCount)
       : alignment.filter((item) => item.bias === alignedBias).length;
+  const direction = alignedBias === "long" ? 1 : alignedBias === "short" ? -1 : 0;
+  const triggerAtr = trigger.price * trigger.atrPercent / 100;
+  const stopDistance = triggerAtr * 1.25;
   const result = {
     ...context,
     bias: alignedBias as ScannerResult["bias"],
@@ -276,6 +516,18 @@ export function combineTimeframes(args: {
     timeframeMode: args.mode,
     timeframeAlignment: alignment,
     confirmations,
+    price: trigger.price,
+    change24h: trigger.change24h,
+    rsi: trigger.rsi,
+    atrPercent: trigger.atrPercent,
+    rangePosition: trigger.rangePosition,
+    entry: direction ? trigger.price : null,
+    stopLoss: direction ? trigger.price - direction * stopDistance : null,
+    takeProfit1: direction ? trigger.price + direction * stopDistance * 1.5 : null,
+    takeProfit2: direction ? trigger.price + direction * stopDistance * 2.5 : null,
+    riskReward1: direction ? 1.5 : null,
+    riskReward2: direction ? 2.5 : null,
+    updatedAt: trigger.updatedAt,
   };
   const directionLabel =
     alignedBias === "long"
@@ -283,9 +535,33 @@ export function combineTimeframes(args: {
       : alignedBias === "short"
         ? "selling"
         : "mixed";
+  const frameExplanation = (timeframe: string) => {
+    const frame = args.analyses[timeframe];
+    if (!frame) return `${timeframe}: data unavailable.`;
+    const direction = frame.bias === "neutral" ? "mixed" : frame.bias;
+    const movement = `${Math.abs(frame.change24h).toFixed(2)}% ${frame.change24h >= 0 ? "higher" : "lower"} over the last 24h`;
+    const range = `${frame.rangePosition.toFixed(0)}% through its latest seven-candle range`;
+    return `${timeframe}: ${direction}; ${frame.technicalStructure}; RSI ${frame.rsi.toFixed(0)}, ${movement}, ${range}.`;
+  };
   const triggerCandles = (args.candles[profile.trigger] ?? []).filter(
     (candle) => candle.complete,
   );
+  const zones = [profile.context, profile.setup].flatMap((timeframe) =>
+    detectSupportResistanceZones({
+      candles: args.candles[timeframe] ?? [],
+      timeframe,
+      currentPrice: trigger.price,
+    }),
+  );
+  const priceInsideZone = zones
+    .filter((zone) => trigger.price >= zone.low && trigger.price <= zone.high)
+    .sort((a, b) => b.strength - a.strength)[0] ?? null;
+  const nearestSupport = zones
+    .filter((zone) => zone.kind === "support" && zone.midpoint < trigger.price)
+    .sort((a, b) => a.distanceAtr - b.distanceAtr || b.strength - a.strength)[0] ?? null;
+  const nearestResistance = zones
+    .filter((zone) => zone.kind === "resistance" && zone.midpoint > trigger.price)
+    .sort((a, b) => a.distanceAtr - b.distanceAtr || b.strength - a.strength)[0] ?? null;
   const last = triggerCandles.at(-1);
   const prior = triggerCandles.slice(-7, -1);
   const priorHigh = prior.length
@@ -392,14 +668,30 @@ export function combineTimeframes(args: {
         : `${args.mode} · ${profile.context} context → ${profile.setup} setup → ${profile.trigger} trigger`,
     analysis:
       alignedBias === "neutral"
-        ? `The ${profile.context}, ${profile.setup} and ${profile.trigger} readings are mixed. Wait for the timeframes to agree before considering a trade.`
-        : `${confirmations} of ${alignment.length} timeframes support ${directionLabel}. Use the ${profile.trigger} chart only for entry confirmation, not for changing the higher-timeframe direction.`,
+        ? `No trade thesis yet: ${profile.context}, ${profile.setup} and ${profile.trigger} do not form a consistent directional structure. The scanner is showing the conflict, not recommending an entry.`
+        : `${directionLabel === "selling" ? "Bearish" : "Bullish"} structure is aligned across ${confirmations}/${alignment.length} timeframes. The ${profile.context} chart defines the directional thesis; ${profile.setup} must remain aligned, and ${profile.trigger} is used only to time a low-risk entry.`,
     reasons: [
-      `${profile.context} context: ${context.bias === "neutral" ? "mixed" : context.bias}.`,
-      `${profile.setup} setup: ${args.analyses[profile.setup]?.bias ?? "neutral"}.`,
-      `${profile.trigger} trigger: ${args.analyses[profile.trigger]?.bias ?? "neutral"}.`,
-      `${confirmations} of ${alignment.length} timeframes currently agree.`,
+      frameExplanation(profile.context),
+      frameExplanation(profile.setup),
+      frameExplanation(profile.trigger),
+      selected
+        ? `Entry condition: ${selected.nextStep}`
+        : "Entry condition: wait for a defined trigger before considering a trade.",
     ],
+    supportResistance: {
+      support: nearestSupport,
+      resistance: nearestResistance,
+      priceInsideZone,
+    },
+    pendingOrderPlans: buildPendingOrderPlans({
+      bias: alignedBias,
+      price: trigger.price,
+      atr: triggerAtr,
+      support: nearestSupport,
+      resistance: nearestResistance,
+      inside: priceInsideZone,
+      mode: args.mode,
+    }),
     strategies,
     selectedStrategy: selected,
   };

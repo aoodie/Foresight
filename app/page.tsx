@@ -34,6 +34,7 @@ import {
 } from "@/components/ui/select";
 import { TradingViewChart } from "@/components/tradingview-chart";
 import { EconomicCalendar, PairNews } from "@/components/tradingview-context";
+import { PairLlmChat } from "@/components/pair-llm-chat";
 
 type Candle = {
   time: string;
@@ -80,6 +81,36 @@ type OpenTrade = {
   stopLoss: number | null;
   takeProfit: number | null;
 };
+type TradeFill = {
+  id: string;
+  time: string;
+  instrument: string | null;
+  tradeId: string | null;
+  tradeIds: string[];
+  pnl: number;
+  units: number;
+  price: number | null;
+  reason: string | null;
+  closeReason: string | null;
+  isEntry: boolean;
+  isClose: boolean;
+};
+type JournalEntry = {
+  id: string;
+  instrument: string;
+  direction: string;
+  status: string;
+  broker_trade_id: string | null;
+  entry_price: number | null;
+  stop_loss: number | null;
+  take_profit_1: number | null;
+  take_profit_2: number | null;
+  pnl: number | null;
+  notes: string | null;
+  opened_at: string | null;
+  closed_at: string | null;
+  metadata_json: string | null;
+};
 type TradeReview = {
   drifted: boolean;
   decision: "hold" | "review" | "reduce" | "close";
@@ -125,7 +156,32 @@ type StrategyEvidence = {
   why: string;
   nextStep: string;
 };
+type SupportResistanceZone = {
+  kind: "support" | "resistance";
+  timeframe: string;
+  low: number;
+  high: number;
+  midpoint: number;
+  touches: number;
+  strength: number;
+  distanceAtr: number;
+};
+type PendingOrderPlan = {
+  orderType: "buy_limit" | "buy_stop" | "sell_limit" | "sell_stop";
+  setup: "pullback" | "breakout";
+  status: "watch" | "blocked";
+  entry: number;
+  stopLoss: number;
+  takeProfit: number;
+  riskReward: number;
+  zone: SupportResistanceZone;
+  rationale: string;
+  confirmation: string;
+  expiry: string;
+  warning: string | null;
+};
 type ScanResult = {
+  strategyVersion: string;
   instrument: string;
   label: string;
   assetClass: "forex" | "metal" | "index";
@@ -135,6 +191,15 @@ type ScanResult = {
   change24h: number;
   rsi: number;
   atrPercent: number;
+  marketRegime: {
+    type: "trending" | "ranging" | "breakout" | "volatile" | "compression";
+    direction: "bullish" | "bearish" | "neutral";
+    volatility: "low" | "normal" | "high";
+    label: string;
+    confidence: number;
+    explanation: string;
+    playbook: string;
+  };
   rangePosition: number;
   entry: number | null;
   stopLoss: number | null;
@@ -142,6 +207,7 @@ type ScanResult = {
   takeProfit2: number | null;
   riskReward1: number | null;
   riskReward2: number | null;
+  technicalStructure: string;
   analysis: string;
   reasons: string[];
   invalidation: string;
@@ -154,6 +220,12 @@ type ScanResult = {
     score: number;
   }>;
   confirmations?: number;
+  supportResistance?: {
+    support: SupportResistanceZone | null;
+    resistance: SupportResistanceZone | null;
+    priceInsideZone: SupportResistanceZone | null;
+  };
+  pendingOrderPlans?: PendingOrderPlan[];
   strategies?: StrategyEvidence[];
   selectedStrategy?: StrategyEvidence;
 };
@@ -225,7 +297,7 @@ const instruments = [
 
 function priceDecimals(instrument: string) {
   if (instrument.endsWith("_JPY")) return 3;
-  if (instrument === "XAU_USD") return 2;
+  if (instrument === "XAU_USD") return 3;
   if (instrument === "US30_USD") return 1;
   return 5;
 }
@@ -267,6 +339,19 @@ function chartPoints(candles: Candle[]) {
     .join(" ");
 }
 
+function journalMetadata(entry: JournalEntry | null) {
+  if (!entry?.metadata_json) return {} as Record<string, unknown>;
+  try { return JSON.parse(entry.metadata_json) as Record<string, unknown>; } catch { return {}; }
+}
+
+function closeSummary(entry: JournalEntry | null) {
+  if (!entry || !["closed", "cancelled", "win", "loss", "breakeven"].includes(entry.status)) return null;
+  const metadata = journalMetadata(entry);
+  const reason = typeof metadata.closeReason === "string" ? metadata.closeReason : entry.notes?.startsWith("LLM closed:") ? "LLM close" : entry.notes?.startsWith("Manual close") ? "Manual close" : "Closed order";
+  const notes = entry.notes?.startsWith("LLM closed:") ? entry.notes.slice("LLM closed:".length).trim() : entry.notes;
+  return { reason, notes };
+}
+
 export default function Home() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -291,6 +376,8 @@ export default function Home() {
   const [quote, setQuote] = useState<Quote | null>(null);
   const [account, setAccount] = useState<AccountSummary | null>(null);
   const [openTrades, setOpenTrades] = useState<OpenTrade[]>([]);
+  const [tradeFills, setTradeFills] = useState<TradeFill[]>([]);
+  const [journalEntries, setJournalEntries] = useState<JournalEntry[]>([]);
   const [eventStatus, setEventStatus] = useState<EconomicEventStatus | null>(null);
   const [tradeReview, setTradeReview] = useState<TradeReview | null>(null);
   const [monitorStatus, setMonitorStatus] = useState("");
@@ -524,7 +611,13 @@ export default function Home() {
     try {
       const response = await fetch("/api/oanda/trades?t=" + Date.now(), { cache: "no-store" });
       const payload = await response.json();
-      if (response.ok && payload.connected) setOpenTrades(Array.isArray(payload.trades) ? payload.trades : []);
+      if (response.ok && payload.connected) {
+        setOpenTrades(Array.isArray(payload.trades) ? payload.trades : []);
+        setTradeFills(Array.isArray(payload.fills) ? payload.fills : []);
+      }
+      const journalResponse = await fetch("/api/journal?limit=200&t=" + Date.now(), { cache: "no-store" });
+      const journalPayload = await journalResponse.json();
+      if (journalResponse.ok && Array.isArray(journalPayload.entries)) setJournalEntries(journalPayload.entries);
     } catch {
       // The next polling cycle will retry without interrupting the trade screen.
     }
@@ -747,17 +840,29 @@ export default function Home() {
   const planStop = marketAiPlan?.stopLoss ?? marketSetup?.stopLoss ?? null;
   const planTp1 = marketAiPlan?.takeProfit1 ?? marketSetup?.takeProfit1 ?? null;
   const planTp2 = marketAiPlan?.takeProfit2 ?? marketSetup?.takeProfit2 ?? null;
-  const direction = marketSetup?.bias === "short" || marketAiPlan?.verdict === "short" ? "short" : "long";
-  const stopDistance = planEntry !== null && planStop !== null ? Math.abs(planEntry - planStop) : null;
-  const tp1Distance = planEntry !== null && planTp1 !== null ? Math.abs(planTp1 - planEntry) : null;
-  const tp2Distance = planEntry !== null && planTp2 !== null ? Math.abs(planTp2 - planEntry) : null;
+  const direction = marketAiPlan?.verdict === "long" || marketAiPlan?.verdict === "short"
+    ? marketAiPlan.verdict
+    : marketSetup?.bias === "long" || marketSetup?.bias === "short"
+      ? marketSetup.bias
+      : null;
+  const executionEntry = direction === "long" ? quote?.ask ?? planEntry : direction === "short" ? quote?.bid ?? planEntry : null;
+  const stopDistance = executionEntry !== null && planStop !== null ? Math.abs(executionEntry - planStop) : null;
+  const tp1Distance = executionEntry !== null && planTp1 !== null ? Math.abs(planTp1 - executionEntry) : null;
+  const tp2Distance = executionEntry !== null && planTp2 !== null ? Math.abs(planTp2 - executionEntry) : null;
+  const protectedLevelsOrdered = direction === "long"
+    ? planStop !== null && executionEntry !== null && planTp1 !== null && planStop < executionEntry && executionEntry < planTp1
+    : direction === "short"
+      ? planStop !== null && executionEntry !== null && planTp1 !== null && planTp1 < executionEntry && executionEntry < planStop
+      : false;
+  const liveRiskReward = stopDistance && tp1Distance !== null ? tp1Distance / stopDistance : null;
+  const validProtectedPlan = protectedLevelsOrdered && liveRiskReward !== null && liveRiskReward >= 1.5;
   const parsedRiskPercent = Number(riskPercent);
-  const validRiskPercent = Number.isFinite(parsedRiskPercent) && parsedRiskPercent > 0 && parsedRiskPercent <= 5;
+  const validRiskPercent = Number.isFinite(parsedRiskPercent) && parsedRiskPercent > 0 && parsedRiskPercent <= 2;
   const riskAmount = account && validRiskPercent ? account.equity * parsedRiskPercent / 100 : null;
-  const conversion = quote?.homeConversionFactors?.[direction === "short" ? "negativeUnits" : "positiveUnits"] ?? null;
+  const conversion = quote?.homeConversionFactors?.negativeUnits ?? null;
   const cashRiskPerUnit = stopDistance !== null && conversion !== null ? stopDistance * conversion : null;
   const calculatedUnits = riskAmount !== null && cashRiskPerUnit !== null && cashRiskPerUnit > 0
-    ? Math.max(0, Math.floor(riskAmount / cashRiskPerUnit))
+    ? Math.min(1_000_000, Math.max(0, Math.floor(riskAmount / cashRiskPerUnit)))
     : 0;
   const calculatedLots = marketSetup?.assetClass === "forex" ? calculatedUnits / 100000 : null;
   const slPips = stopDistance === null ? null : stopDistance * pipMultiplier(instrument);
@@ -767,9 +872,43 @@ export default function Home() {
   const estimatedTp1 = calculatedUnits && tp1Distance !== null && conversion !== null ? calculatedUnits * tp1Distance * conversion : null;
   const estimatedTp2 = calculatedUnits && tp2Distance !== null && conversion !== null ? calculatedUnits * tp2Distance * conversion : null;
   const monitoredTrade = openTrades.find((trade) => trade.instrument === instrument) ?? null;
+  const instrumentJournals = journalEntries.filter((entry) => entry.instrument === instrument);
+  const chartJournal = monitoredTrade
+    ? instrumentJournals.find((entry) => entry.broker_trade_id === monitoredTrade.id) ?? null
+    : [...instrumentJournals].sort((a, b) => (b.closed_at ?? b.opened_at ?? "").localeCompare(a.closed_at ?? a.opened_at ?? ""))[0] ?? null;
+  const chartLevels = monitoredTrade
+    ? { entry: monitoredTrade.price, stopLoss: monitoredTrade.stopLoss, takeProfit1: monitoredTrade.takeProfit, takeProfit2: null }
+    : chartJournal
+      ? { entry: chartJournal.entry_price, stopLoss: chartJournal.stop_loss, takeProfit1: chartJournal.take_profit_1, takeProfit2: chartJournal.take_profit_2 }
+      : { entry: planEntry, stopLoss: planStop, takeProfit1: planTp1, takeProfit2: planTp2 };
+  const chartClose = closeSummary(chartJournal);
+  const chartMarkers = useMemo(() => tradeFills
+    .filter((fill) => fill.instrument === instrument && (fill.isEntry || fill.isClose) && fill.price !== null)
+    .flatMap((fill) => {
+      const journal = journalEntries.find((entry) => entry.broker_trade_id && fill.tradeIds.includes(entry.broker_trade_id));
+      const llmClose = Boolean(journal?.notes?.startsWith("LLM closed:"));
+      const markers = [] as Array<{ time: string; price: number; kind: "entry" | "close"; label: string; color: string }>;
+      if (fill.isEntry) markers.push({ time: fill.time, price: fill.price!, kind: "entry", label: fill.units < 0 ? "SHORT ENTRY" : "LONG ENTRY", color: "#a4ffcf" });
+      if (fill.isClose) markers.push({ time: fill.time, price: fill.price!, kind: "close", label: llmClose ? "LLM CLOSE" : fill.closeReason ?? "CLOSE", color: llmClose ? "#c4b5fd" : fill.closeReason === "TP" ? "#7dd3fc" : "#fb7185" });
+      return markers;
+    }), [instrument, journalEntries, tradeFills]);
   const totalUnrealizedPL = openTrades.reduce((total, trade) => total + trade.unrealizedPL, 0);
   const currentEventStatus = eventStatus?.instrument === instrument ? eventStatus : null;
   const newsBlocked = !currentEventStatus || !currentEventStatus.available || currentEventStatus.blocked;
+  const pairChatSnapshot: Record<string, unknown> = {
+    instrument,
+    granularity,
+    tradingMode: scanMode,
+    quote: quote ? { bid: quote.bid, ask: quote.ask, mid: quote.mid, spread: quote.spread, time: quote.time, marketStatus: quote.marketStatus } : null,
+    timeframeProfile: scanner?.timeframes ?? null,
+    scanner: marketSetup ? { strategyVersion: marketSetup.strategyVersion, bias: marketSetup.bias, score: marketSetup.score, rsi: marketSetup.rsi, atrPercent: marketSetup.atrPercent, marketRegime: marketSetup.marketRegime, analysis: marketSetup.analysis, reasons: marketSetup.reasons, invalidation: marketSetup.invalidation, supportResistance: marketSetup.supportResistance, selectedStrategy: marketSetup.selectedStrategy, timeframeAlignment: marketSetup.timeframeAlignment } : null,
+    llmPlan: marketAiPlan ?? null,
+    plannedLevels: { entry: planEntry, stopLoss: planStop, takeProfit1: planTp1, takeProfit2: planTp2, riskReward1: liveRiskReward },
+    openTrade: monitoredTrade,
+    eventRisk: currentEventStatus ? { available: currentEventStatus.available, blocked: currentEventStatus.blocked, nextEvent: currentEventStatus.nextEvent, recentEvents: currentEventStatus.events.slice(0, 6) } : null,
+    recentCompletedCandles: (data?.candles ?? []).filter((candle) => candle.complete).slice(-12),
+    snapshotAt: quote?.time ?? data?.lastUpdated ?? null,
+  };
 
   useEffect(() => {
     if (!monitoredTrade || !marketSetup || !aiConnected || reviewBusy.current) return;
@@ -804,6 +943,7 @@ export default function Home() {
           bias: marketSetup.bias,
           rsi: marketSetup.rsi,
           atrPercent: marketSetup.atrPercent,
+          marketRegime: marketSetup.marketRegime,
           timeframeAlignment: marketSetup.timeframeAlignment,
           selectedStrategy: marketSetup.selectedStrategy,
         },
@@ -823,7 +963,7 @@ export default function Home() {
   }, [aiConnected, eventStatus, instrument, marketAiPlan, marketSetup, monitoredTrade, quote?.mid, scanMode, scanner?.timeframes]);
 
   const submitOrder = async () => {
-    if (!marketSetup) return;
+    if (!marketSetup || !direction) return;
     if (!eventStatus?.available) {
       setOrderStatus("New orders are blocked until the high-impact news calendar can be verified.");
       return;
@@ -834,6 +974,10 @@ export default function Home() {
     }
     if (!calculatedUnits) {
       setOrderStatus("Waiting for account equity, a valid stop distance and a valid risk percentage.");
+      return;
+    }
+    if (!validProtectedPlan) {
+      setOrderStatus("Order blocked: the stop and TP1 must remain correctly ordered at the live quote with at least 1.5 risk/reward.");
       return;
     }
     setOrderStatus("Submitting order…");
@@ -860,16 +1004,17 @@ export default function Home() {
             thesis: marketAiPlan?.analysis ?? marketSetup.analysis,
             evidence: marketAiPlan?.reasons?.join(" ") ?? marketSetup.reasons.join(" "),
             invalidation: marketAiPlan?.invalidation ?? marketSetup.invalidation,
-            metadata: { score: marketSetup.score, rsi: marketSetup.rsi, atrPercent: marketSetup.atrPercent, timeframeAlignment: marketSetup.timeframeAlignment },
+            metadata: { strategyVersion: marketSetup.strategyVersion, score: marketSetup.score, rsi: marketSetup.rsi, atrPercent: marketSetup.atrPercent, marketRegime: marketSetup.marketRegime, timeframeAlignment: marketSetup.timeframeAlignment },
           },
         }),
       });
       const payload = await response.json();
       if (!response.ok)
         throw new Error(payload.error || "Order could not be submitted.");
-      setOrderStatus(
-        `${payload.accountEnvironment === "practice" ? "Demo" : "Live"} OANDA order submitted · ${payload.orderId ?? "no ID"}`,
-      );
+      const executionLabel = payload.status === "netted"
+        ? "Order filled by reducing or closing an existing position"
+        : `${payload.accountEnvironment === "practice" ? "Demo" : "Live"} OANDA trade opened`;
+      setOrderStatus(`${executionLabel} · ${payload.tradeId ?? payload.fillTransactionId ?? payload.orderId ?? "broker confirmed"}${payload.journalWarning ? ` · Journal warning: ${payload.journalWarning}` : ""}`);
       if (payload.mode === "live") void refreshTrades();
       setLiveConfirm(false);
     } catch (error) {
@@ -934,17 +1079,23 @@ export default function Home() {
           </div>
         </div>
         <nav
-          className="order-3 flex w-full gap-1 rounded-xl border border-white/10 bg-black/15 p-1 sm:order-none sm:w-auto"
+          className="order-3 flex w-full flex-wrap gap-1 rounded-xl border border-white/10 bg-black/15 p-1 sm:order-none sm:w-auto"
           aria-label="Primary navigation"
         >
           <NavLink href="/" active={isOverview}>
             Overview
+          </NavLink>
+          <NavLink href="/open-trades" active={false}>
+            Open trades
           </NavLink>
           <NavLink href="/markets" active={isMarkets}>
             Markets
           </NavLink>
           <NavLink href="/research" active={isResearch}>
             News & events
+          </NavLink>
+          <NavLink href="/validation" active={false}>
+            Validation
           </NavLink>
           <NavLink href="/learning" active={false}>Learning lab</NavLink>
           <NavLink href="/journal" active={false}>
@@ -1253,6 +1404,7 @@ export default function Home() {
                       </p>
                       <div className="mt-2">
                         <Bias bias={topSetup.bias} />
+                        <span className="ml-2"><RegimeBadge regime={topSetup.marketRegime} /></span>
                         <span className="ml-2 text-xs text-[#8aa29a]">
                           Score {topSetup.score}/100
                         </span>
@@ -1296,11 +1448,12 @@ export default function Home() {
                       <th className="px-5 py-3 font-medium">Rank</th>
                       <th className="px-3 py-3 font-medium">Market</th>
                       <th className="px-3 py-3 font-medium">Bias</th>
+                      <th className="px-3 py-3 font-medium">Regime</th>
                       <th className="px-3 py-3 font-medium">Score</th>
                       <th className="px-3 py-3 font-medium">Align</th>
                       <th className="px-3 py-3 font-medium">RSI</th>
                       <th className="px-5 py-3 font-medium">
-                        Multi-timeframe analysis
+                        Trade thesis & entry conditions
                       </th>
                     </tr>
                   </thead>
@@ -1326,6 +1479,10 @@ export default function Home() {
                         </td>
                         <td className="px-3 py-4">
                           <Bias bias={result.bias} />
+                        </td>
+                        <td className="px-3 py-4">
+                          <RegimeBadge regime={result.marketRegime} />
+                          <p className="mt-1 text-[9px] uppercase tracking-[.08em] text-[#71887f]">{result.marketRegime.volatility} volatility · {result.marketRegime.confidence}%</p>
                         </td>
                         <td className="px-3 py-4 font-mono">{result.score}</td>
                         <td className="px-3 py-4">
@@ -1356,14 +1513,36 @@ export default function Home() {
                           <p className="text-xs leading-5 text-[#c0d1ca]">
                             {result.analysis}
                           </p>
-                          <ul className="mt-1 space-y-0.5 text-[11px] leading-4 text-[#81978f]">
+                          <ul className="mt-2 space-y-1 text-[11px] leading-4 text-[#81978f]">
                             {result.reasons.map((reason) => (
-                              <li key={reason}>• {reason}</li>
+                              <li key={reason} className="flex gap-1.5"><span className="text-[#89f6bf]">•</span><span>{reason}</span></li>
                             ))}
                           </ul>
-                          <p className="mt-1 text-[10px] text-amber-200/70">
-                            Invalidation: {result.invalidation}
+                          <p className="mt-2 rounded-md border border-amber-200/10 bg-amber-200/[.035] px-2 py-1.5 text-[10px] leading-4 text-amber-100/75">
+                            <span className="font-medium text-amber-100">Risk / invalidation:</span> {result.invalidation}
                           </p>
+                          {result.supportResistance && (
+                            <div className="mt-2 flex flex-wrap gap-1.5 text-[9px]">
+                              <span className="rounded bg-sky-300/[.07] px-2 py-1 text-sky-100/80">
+                                Support {formatScannerPrice(result.instrument, result.supportResistance.support?.low ?? null)}–{formatScannerPrice(result.instrument, result.supportResistance.support?.high ?? null)}
+                              </span>
+                              <span className="rounded bg-rose-300/[.07] px-2 py-1 text-rose-100/80">
+                                Resistance {formatScannerPrice(result.instrument, result.supportResistance.resistance?.low ?? null)}–{formatScannerPrice(result.instrument, result.supportResistance.resistance?.high ?? null)}
+                              </span>
+                              {result.supportResistance.priceInsideZone && (
+                                <span className="rounded bg-amber-300/10 px-2 py-1 font-medium text-amber-100">CAUTION: price inside zone</span>
+                              )}
+                            </div>
+                          )}
+                          {!!result.pendingOrderPlans?.length && (
+                            <div className="mt-2 flex flex-wrap gap-1.5 text-[9px] uppercase tracking-[.06em]">
+                              {result.pendingOrderPlans.map((plan) => (
+                                <span key={plan.orderType} className={(plan.status === "blocked" ? "bg-rose-300/10 text-rose-200" : "bg-[#a4ffcf]/10 text-[#89f6bf]") + " rounded px-2 py-1"}>
+                                  {plan.orderType.replace("_", " ")} · {plan.status}
+                                </span>
+                              ))}
+                            </div>
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -1927,6 +2106,15 @@ export default function Home() {
                     <p className="mt-5 text-sm leading-6 text-[#c0d1ca]">
                       {marketSetup.analysis}
                     </p>
+                    <div className="mt-4 rounded-xl border border-[#a4ffcf]/15 bg-[#a4ffcf]/[.035] p-4">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div><p className="text-[10px] tracking-[.12em] text-[#89f6bf]">MARKET REGIME</p><h3 className="mt-1 text-lg text-white">{marketSetup.marketRegime.label}</h3></div>
+                        <div className="flex flex-wrap gap-2"><RegimeBadge regime={marketSetup.marketRegime} /><span className="rounded-full bg-white/[.05] px-2.5 py-1 text-[10px] uppercase tracking-[.08em] text-[#a9bdb6]">{marketSetup.marketRegime.volatility} volatility</span></div>
+                      </div>
+                      <p className="mt-3 text-xs leading-5 text-[#c0d1ca]">{marketSetup.marketRegime.explanation}</p>
+                      <p className="mt-2 text-xs leading-5 text-[#89f6bf]"><span className="font-semibold">Trading implication:</span> {marketSetup.marketRegime.playbook}</p>
+                      <p className="mt-2 text-[10px] text-[#71887f]">Confidence {marketSetup.marketRegime.confidence}% · completed candles only · EMA separation · directional efficiency · range breaks · ATR expansion/contraction.</p>
+                    </div>
                     <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
                       <PlanLevel
                         label="Reference entry"
@@ -1960,6 +2148,46 @@ export default function Home() {
                         tone="reward"
                       />
                     </div>
+                    {marketSetup.supportResistance && (
+                      <div className="mt-5 rounded-xl border border-white/8 bg-black/15 p-4">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <p className="text-[10px] tracking-[.12em] text-[#89f6bf]">SUPPORT & RESISTANCE MAP</p>
+                            <p className="mt-1 text-xs leading-5 text-[#8fa59b]">Zones are clustered from completed higher-timeframe swing highs and lows. They are areas of interest, not automatic entry prices.</p>
+                          </div>
+                          {marketSetup.supportResistance.priceInsideZone && (
+                            <span className="rounded-full bg-amber-300/10 px-2.5 py-1 text-[10px] font-semibold text-amber-100">NO ENTRY · PRICE INSIDE ZONE</span>
+                          )}
+                        </div>
+                        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                          {([marketSetup.supportResistance.support, marketSetup.supportResistance.resistance] as Array<SupportResistanceZone | null>).map((zone, index) => (
+                            <div key={zone ? `${zone.kind}-${zone.timeframe}-${zone.midpoint}` : `missing-${index}`} className="rounded-lg border border-white/[.07] bg-white/[.02] p-3">
+                              <p className={(zone?.kind === "support" ? "text-sky-200" : "text-rose-200") + " text-[10px] font-semibold uppercase tracking-[.1em]"}>{zone?.kind ?? (index === 0 ? "support" : "resistance")}</p>
+                              {zone ? <><p className="mt-1 font-mono text-sm text-white">{formatScannerPrice(instrument, zone.low)}–{formatScannerPrice(instrument, zone.high)}</p><p className="mt-1 text-[10px] text-[#81978f]">{zone.timeframe} · strength {zone.strength}/100 · {zone.touches} swing touch{zone.touches === 1 ? "" : "es"} · {zone.distanceAtr.toFixed(1)} ATR away</p></> : <p className="mt-1 text-xs text-[#71887f]">No reliable nearby zone detected.</p>}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {!!marketSetup.pendingOrderPlans?.length && (
+                      <div className="mt-5">
+                        <div className="flex items-end justify-between gap-3">
+                          <div><p className="text-[10px] tracking-[.12em] text-[#89f6bf]">PENDING-ORDER SCENARIOS</p><p className="mt-1 text-xs text-[#81978f]">Advisory/paper-only. Orders require the stated confirmation before activation.</p></div>
+                        </div>
+                        <div className="mt-3 grid gap-3 lg:grid-cols-2">
+                          {marketSetup.pendingOrderPlans.map((plan) => (
+                            <article key={plan.orderType} className={(plan.status === "blocked" ? "border-rose-300/15" : "border-[#a4ffcf]/15") + " rounded-xl border bg-black/15 p-4"}>
+                              <div className="flex items-center justify-between gap-3"><div><p className="text-sm font-medium uppercase text-white">{plan.orderType.replace("_", " ")}</p><p className="mt-0.5 text-[10px] uppercase tracking-[.1em] text-[#81978f]">{plan.setup} scenario</p></div><span className={(plan.status === "blocked" ? "bg-rose-300/10 text-rose-200" : "bg-[#a4ffcf]/10 text-[#89f6bf]") + " rounded-full px-2 py-1 text-[9px] font-semibold uppercase"}>{plan.status}</span></div>
+                              <div className="mt-3 grid grid-cols-3 gap-2 text-[10px]"><PlanLevel label="Entry" value={formatScannerPrice(instrument, plan.entry)} /><PlanLevel label="Stop" value={formatScannerPrice(instrument, plan.stopLoss)} tone="risk" /><PlanLevel label={`Target · ${plan.riskReward.toFixed(1)}R`} value={formatScannerPrice(instrument, plan.takeProfit)} tone="reward" /></div>
+                              <p className="mt-3 text-xs leading-5 text-[#c0d1ca]">{plan.rationale}</p>
+                              <p className="mt-2 text-[11px] leading-4 text-[#8fa59b]"><span className="text-[#89f6bf]">Confirmation:</span> {plan.confirmation}</p>
+                              <p className="mt-2 text-[10px] text-[#71887f]">Expires after {plan.expiry}; cancel if bias or zone structure changes.</p>
+                              {plan.warning && <p className="mt-2 rounded-md bg-rose-300/[.06] px-2 py-1.5 text-[10px] leading-4 text-rose-200">Blocked: {plan.warning}</p>}
+                            </article>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                     <div className="mt-5 grid gap-3 sm:grid-cols-2">
                       <div className="rounded-xl border border-white/8 bg-black/15 p-4">
                         <p className="text-[10px] tracking-[.12em] text-[#89f6bf]">
@@ -2038,7 +2266,7 @@ export default function Home() {
                             <SelectContent>
                               <SelectItem value="scalping">Scalping · M5 entry</SelectItem>
                               <SelectItem value="intraday">Intraday · M15 entry</SelectItem>
-                              <SelectItem value="swing">Swing · M15 entry</SelectItem>
+                              <SelectItem value="swing">Swing · H1 entry</SelectItem>
                             </SelectContent>
                           </Select>
                           <input
@@ -2054,7 +2282,7 @@ export default function Home() {
                         </div>
                         <p className="mt-3 text-xs text-[#a9bdb6]">
                           {marketSetup
-                            ? `${direction.toUpperCase()} ${marketSetup.instrument} · ${scanMode} · Entry ${formatScannerPrice(marketSetup.instrument, planEntry)} · SL ${formatScannerPrice(marketSetup.instrument, planStop)} · TP1 ${formatScannerPrice(marketSetup.instrument, planTp1)}`
+                            ? `${direction?.toUpperCase() ?? "WAIT"} ${marketSetup.instrument} · ${scanMode} · Live entry ${formatScannerPrice(marketSetup.instrument, executionEntry)} · SL ${formatScannerPrice(marketSetup.instrument, planStop)} · TP1 ${formatScannerPrice(marketSetup.instrument, planTp1)}`
                             : "Run the scanner to prepare an order."}
                         </p>
                         <div className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
@@ -2091,8 +2319,10 @@ export default function Home() {
                           onClick={() => void submitOrder()}
                           disabled={
                             !marketSetup ||
+                            !direction ||
                             !calculatedUnits ||
                             !validRiskPercent ||
+                            !validProtectedPlan ||
                             newsBlocked ||
                             (executionMode === "live" && !liveConfirm)
                           }
@@ -2313,28 +2543,22 @@ export default function Home() {
                   indicators and drawing tools
                 </div>
               </div>
-              <TradingViewChart
-                instrument={instrument}
-                granularity={granularity}
-                candles={data?.candles}
-                levels={
-                  marketSetup
-                    ? {
-                        entry: marketAiPlan?.entry ?? marketSetup.entry,
-                        stopLoss:
-                          marketAiPlan?.stopLoss ?? marketSetup.stopLoss,
-                        takeProfit1:
-                          marketAiPlan?.takeProfit1 ?? marketSetup.takeProfit1,
-                        takeProfit2:
-                          marketAiPlan?.takeProfit2 ?? marketSetup.takeProfit2,
-                      }
-                    : undefined
-                }
-              />
+              <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_380px]">
+                <TradingViewChart
+                  instrument={instrument}
+                  granularity={granularity}
+                  candles={data?.candles}
+                  levels={chartLevels}
+                  markers={chartMarkers}
+                  tradeSummary={chartJournal ? { status: chartJournal.status === "closed" ? "CLOSED" : "EXECUTED", closeReason: chartClose?.reason, closeNotes: chartClose?.notes } : undefined}
+                />
+                <PairLlmChat key={instrument} instrument={instrument} connected={aiConnected} snapshot={pairChatSnapshot} />
+              </div>
               <p className="mt-3 text-[11px] leading-5 text-[#71887f]">
                 Candles are fetched from OANDA and rendered with TradingView
-                Lightweight Charts. Entry, stop loss and take-profit lines are
-                actual chart overlays tied to the selected strategy.
+                Lightweight Charts. Executed entry, stop loss, take-profit and
+                close markers are taken from OANDA fills; close reasons are
+                matched to the journal review.
               </p>
             </section>
 
@@ -2431,6 +2655,16 @@ function Bias({ bias }: { bias: "long" | "short" | "neutral" }) {
       {bias}
     </span>
   );
+}
+function RegimeBadge({ regime }: { regime: ScanResult["marketRegime"] }) {
+  const tone = regime.type === "trending" || regime.type === "breakout"
+    ? "bg-[#59dfa9]/10 text-[#89f6bf]"
+    : regime.type === "volatile"
+      ? "bg-rose-400/10 text-rose-300"
+      : regime.type === "compression"
+        ? "bg-sky-400/10 text-sky-200"
+        : "bg-amber-400/10 text-amber-300";
+  return <span className={tone + " inline-flex rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[.08em]"}>{regime.label}</span>;
 }
 function PlanLevel({
   label,

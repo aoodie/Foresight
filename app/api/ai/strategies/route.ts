@@ -16,7 +16,7 @@ export async function POST(request: Request) {
   const markets = Array.isArray(body?.markets) ? body.markets.slice(0, 3) : [];
   if (!markets.length || !markets.every(isStrategyMarket)) return NextResponse.json({ error: "The scanner data is incomplete. Run the daily scan again." }, { status: 400 });
   const mode = body?.mode ?? "intraday";
-  const cacheKey = await hashAiInput({ type: "strategies", version: 4, model: connection.model, baseUrl: connection.baseUrl, mode, markets: compactStrategyMarkets(markets) });
+  const cacheKey = await hashAiInput({ type: "strategies", version: 5, model: connection.model, baseUrl: connection.baseUrl, mode, markets: compactStrategyMarkets(markets) });
   const subjectKey = `strategies:${mode}`;
   try {
     if (!body?.force) {
