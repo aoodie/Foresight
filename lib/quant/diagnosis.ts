@@ -1,0 +1,12 @@
+export type JournalObservation = { id:string; instrument:string; strategy:string; version:string|null; regime:string|null; timeframe:string; openedAt:string|null; pnl:number|null; riskAmount:number|null; exitReason:string|null };
+export function diagnoseJournal(rows:JournalObservation[]) {
+ const completed=rows.filter(r=>r.pnl!==null);
+ const missing=completed.filter(r=>!r.version||!r.regime||!r.riskAmount||r.riskAmount<=0);
+ const eligible=completed.filter(r=>r.version&&r.regime&&r.riskAmount&&r.riskAmount>0);
+ const group=(field:'strategy'|'regime'|'instrument'|'timeframe'|'session')=>{
+  const groups=new Map<string,JournalObservation[]>();for(const r of eligible){const hour=r.openedAt?new Date(r.openedAt).getUTCHours():NaN;const key=field==='strategy'?`${r.strategy} · ${r.version}`:field==='session'?Number.isFinite(hour)?`${Math.floor(hour/6)*6}–${Math.floor(hour/6)*6+6} UTC`:'Time unavailable':String(r[field]);groups.set(key,[...(groups.get(key)??[]),r]);}
+  return [...groups].map(([condition,items])=>{const netR=items.reduce((s,r)=>s+r.pnl!/r.riskAmount!,0);return {condition,trades:items.length,netR,meanR:netR/items.length,evidence:items.length<30?'Too few trades to conclude':'Observed association; not proof of cause'};}).sort((a,b)=>a.meanR-b.meanR);
+ };
+ const regimes=group('regime'),weak=regimes.find(r=>r.trades>=30&&r.meanR<0);
+ return {recorded:rows.length,closed:completed.length,usable:eligible.length,missingEvidence:missing.length,byStrategy:group('strategy'),byRegime:regimes,byInstrument:group('instrument'),byTimeframe:group('timeframe'),bySession:group('session'),summary:eligible.length<30?'There is not enough complete trade history to explain performance reliably. Record strategy version, market condition and original cash risk on new entries.':weak?`Losses are concentrated in ${weak.condition.replaceAll('_',' ')} conditions. Test whether avoiding that condition improves unseen results before changing a strategy.`:'No condition with enough observations clearly explains losses yet. Keep collecting outcomes and compare execution costs with the original plan.',hypothesis:weak?{change:`Test excluding ${weak.condition}`,evidenceTrades:weak.trades,status:'Research hypothesis only; live rules unchanged'}:null,unknownCauses:['Entry timing versus broker slippage needs recorded quote and fill comparisons.','News, liquidity and stop placement are not inferred from P&L alone.','Missing historical reasons cannot be reconstructed reliably.']};
+}

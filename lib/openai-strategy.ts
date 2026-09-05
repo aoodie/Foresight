@@ -1,3 +1,4 @@
+import { llmFetch, type LlmProtocol } from "./llm-provider.ts";
 export type StrategyMarket = {
   instrument: string;
   label: string;
@@ -95,7 +96,7 @@ export function isStrategyMarket(value: unknown): value is StrategyMarket {
 
 export type AiCallResult<T> = { value: T; responseId: string | null; usage: Record<string, unknown> | null; input: unknown; instructions: string };
 
-export async function generateStrategies(apiKey: string, model: string, markets: StrategyMarket[], luxAlgoResearch: unknown, mode: "scalping" | "intraday" | "swing" = "intraday", baseUrl = defaultAiBaseUrl): Promise<AiCallResult<AiStrategy[]>> {
+export async function generateStrategies(apiKey: string, model: string, markets: StrategyMarket[], luxAlgoResearch: unknown, mode: "scalping" | "intraday" | "swing" = "intraday", baseUrl = defaultAiBaseUrl, protocol: LlmProtocol = "responses"): Promise<AiCallResult<AiStrategy[]>> {
   const input = {
     tradingMode: mode,
     timeframeProfile: mode === "scalping"
@@ -106,7 +107,7 @@ export async function generateStrategies(apiKey: string, model: string, markets:
     markets,
     luxAlgoResearch,
   };
-  const response = await fetch(aiEndpoint(baseUrl, "/responses"), {
+  const response = await llmFetch(aiEndpoint(baseUrl, "/responses"), {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -115,7 +116,7 @@ export async function generateStrategies(apiKey: string, model: string, markets:
       input: JSON.stringify(input),
       text: { format: { type: "json_schema", name: "daily_trade_strategies", strict: true, schema: outputSchema } },
     }),
-  });
+  }, protocol);
   const payload = await response.json() as { error?: { message?: string }; output?: Array<{ content?: Array<{ type?: string; text?: string }> }> };
   if (!response.ok) throw new Error(payload.error?.message || "The LLM provider could not generate the daily strategies.");
   const text = payload.output?.flatMap((item) => item.content ?? []).find((item) => item.type === "output_text")?.text;
@@ -148,8 +149,8 @@ const reviewSchema = {
   required: ["drifted", "decision", "sentiment", "confidence", "explanation", "recommendedAction"],
 };
 
-export async function reviewLiveTrade(apiKey: string, model: string, input: unknown, baseUrl = defaultAiBaseUrl): Promise<AiCallResult<LiveTradeReview>> {
-  const response = await fetch(aiEndpoint(baseUrl, "/responses"), {
+export async function reviewLiveTrade(apiKey: string, model: string, input: unknown, baseUrl = defaultAiBaseUrl, protocol: LlmProtocol = "responses"): Promise<AiCallResult<LiveTradeReview>> {
+  const response = await llmFetch(aiEndpoint(baseUrl, "/responses"), {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -158,7 +159,7 @@ export async function reviewLiveTrade(apiKey: string, model: string, input: unkn
       input: JSON.stringify(input),
       text: { format: { type: "json_schema", name: "live_trade_review", strict: true, schema: reviewSchema } },
     }),
-  });
+  }, protocol);
   const payload = await response.json() as { error?: { message?: string }; output?: Array<{ content?: Array<{ type?: string; text?: string }> }> };
   if (!response.ok) throw new Error(payload.error?.message || "The LLM provider could not review the live trade.");
   const text = payload.output?.flatMap((item) => item.content ?? []).find((item) => item.type === "output_text")?.text;

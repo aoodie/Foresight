@@ -10,13 +10,13 @@ async function ownerRequest() { return Boolean((await headers()).get("oai-authen
 
 export async function POST(request: Request) {
   if (!(await ownerRequest())) return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
-  const connection = await getAiKey();
+  const connection = await getAiKey("research");
   if (!connection) return NextResponse.json({ error: "Connect your LLM provider in Settings before generating AI strategies." }, { status: 503 });
   const body = await request.json() as { markets?: unknown[]; mode?: "scalping" | "intraday" | "swing"; force?: boolean } | null;
   const markets = Array.isArray(body?.markets) ? body.markets.slice(0, 3) : [];
   if (!markets.length || !markets.every(isStrategyMarket)) return NextResponse.json({ error: "The scanner data is incomplete. Run the daily scan again." }, { status: 400 });
   const mode = body?.mode ?? "intraday";
-  const cacheKey = await hashAiInput({ type: "strategies", version: 5, model: connection.model, baseUrl: connection.baseUrl, mode, markets: compactStrategyMarkets(markets) });
+  const cacheKey = await hashAiInput({ type: "strategies", version: 5, model: connection.model, baseUrl: connection.baseUrl, protocol: connection.protocol, mode, markets: compactStrategyMarkets(markets) });
   const subjectKey = `strategies:${mode}`;
   try {
     if (!body?.force) {
@@ -33,7 +33,7 @@ export async function POST(request: Request) {
         if (concurrentCache) return concurrentCache;
       }
       const luxAlgoSources = await getLuxAlgoGrounding();
-      const aiCall = await generateStrategies(connection.apiKey, connection.model, markets, luxAlgoSources, mode, connection.baseUrl);
+      const aiCall = await generateStrategies(connection.apiKey, connection.model, markets, luxAlgoSources, mode, connection.baseUrl, connection.protocol);
       const output = { strategies: aiCall.value, luxAlgoSources: luxAlgoSources.map((source) => ({ slug: source.slug, name: source.name, family: source.family, url: source.url })) };
       return await storeDecision({ cacheKey, decisionType: "strategies", subjectKey, model: connection.model, instructions: aiCall.instructions, input: aiCall.input, output, validation: { valid: true, schema: "daily_trade_strategies.v2" }, responseId: aiCall.responseId, usage: aiCall.usage, trigger: body?.force ? "manual_refresh" : "material_market_change", ttlMs: 6 * 60 * 60 * 1000 });
     });

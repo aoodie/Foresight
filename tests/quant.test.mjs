@@ -9,7 +9,13 @@ const { marketContext, confirmedPivots } = await vite.ssrLoadModule('/lib/quant/
 const { decide } = await vite.ssrLoadModule('/lib/quant/engine.ts');
 const { strategies } = await vite.ssrLoadModule('/lib/quant/registry.ts');
 const { replay } = await vite.ssrLoadModule('/lib/quant/replay.ts');
+const { observeLiveStrategies } = await vite.ssrLoadModule('/lib/quant/live.ts');
 const bars = Array.from({length:220},(_,i)=> { const open=100+i*.02+Math.sin(i/3); const close=open+Math.cos(i)*.4; return {openTime:i*3600000,closeTime:(i+1)*3600000,availableAt:(i+1)*3600000,open,close,high:Math.max(open,close)+.1,low:Math.min(open,close)-.1,complete:true}; });
+test('live research observations equal replay decisions and ignore unfinished candles',()=> {
+ const candles=bars.map(b=>({...b,time:new Date(b.openTime).toISOString()}));
+ const observed=observeLiveStrategies('EUR_USD','H1',[...candles,{...candles.at(-1),time:new Date(bars.at(-1).closeTime).toISOString(),complete:false,close:999}]);
+ for (const [index,strategy] of strategies.entries()) assert.deepEqual(observed[index],replay({instrument:'EUR_USD',timeframe:'H1',bars,strategy,costBps:2}).decisions.at(-1));
+});
 test('every strategy is prefix consistent and does not access future bars',()=> {
  for (const s of strategies) for (const length of [60,100,150]) {
   const short=marketContext({instrument:'EUR_USD',timeframe:'H1',bars:bars.slice(0,length),asOf:bars[length-1].closeTime});

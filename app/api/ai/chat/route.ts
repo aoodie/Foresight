@@ -21,11 +21,11 @@ export async function POST(request: Request) {
     if ((item.role !== "user" && item.role !== "assistant") || typeof item.content !== "string" || !item.content.trim()) return [];
     return [{ role: item.role, content: item.content.trim().slice(0, 2_000) }];
   });
-  const connection = await getAiKey();
+  const connection = await getAiKey("chat");
   if (!connection) return NextResponse.json({ error: "Connect your LLM provider in Settings first." }, { status: 503 });
   const started = Date.now();
   try {
-    const result = await askPairAnalyst({ apiKey: connection.apiKey, model: connection.model, baseUrl: connection.baseUrl, instrument: body.instrument, question, messages, snapshot: body.snapshot ?? null });
+    const result = await askPairAnalyst({ apiKey: connection.apiKey, model: connection.model, baseUrl: connection.baseUrl, protocol: connection.protocol, instrument: body.instrument, question, messages, snapshot: body.snapshot ?? null });
     try { await writeSystemLog({ category: "ai", event: "pair_chat.completed", message: `Pair assistant answered a question about ${body.instrument}.`, instrument: body.instrument, durationMs: Date.now() - started, details: { model: connection.model, baseUrl: connection.baseUrl, responseId: result.responseId, usage: result.usage, historyLength: messages.length } }); } catch { /* A log failure must not discard a valid answer. */ }
     return NextResponse.json({ answer: result.answer, model: connection.model, generatedAt: new Date().toISOString() });
   } catch (error) {

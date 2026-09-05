@@ -9,7 +9,7 @@ async function ownerRequest() { return Boolean((await headers()).get("oai-authen
 
 export async function POST(request: Request) {
   if (!(await ownerRequest())) return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
-  const connection = await getAiKey();
+  const connection = await getAiKey("critic");
   if (!connection) return NextResponse.json({ error: "Connect your LLM provider in Settings before monitoring a trade." }, { status: 503 });
   const body = await request.json().catch(() => null);
   if (!body || typeof body !== "object") return NextResponse.json({ error: "Trade review data is missing." }, { status: 400 });
@@ -32,7 +32,7 @@ export async function POST(request: Request) {
     const result = await withInFlightDedup(cacheKey, async () => {
       const concurrentCache = await readCachedDecision<Record<string, unknown>>(cacheKey);
       if (concurrentCache) return concurrentCache;
-      const aiCall = await reviewLiveTrade(connection.apiKey, connection.model, body, connection.baseUrl);
+      const aiCall = await reviewLiveTrade(connection.apiKey, connection.model, body, connection.baseUrl, connection.protocol);
       return await storeDecision({ cacheKey, decisionType: "live_trade_review", subjectKey, model: connection.model, instructions: aiCall.instructions, input: aiCall.input, output: aiCall.value, validation: { valid: true, schema: "live_trade_review.v2" }, responseId: aiCall.responseId, usage: aiCall.usage, trigger: input.reviewReason === "high_impact_news_released" ? "post_news_event" : "material_trade_change", ttlMs: 15 * 60 * 1000 });
     });
     const review = result.value as Record<string, unknown>;

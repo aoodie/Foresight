@@ -1,4 +1,6 @@
 import type { NormalisedCandle } from "./oanda-api.ts";
+import { observeLiveStrategies } from "./quant/live.ts";
+import type { Decision } from "./quant/types.ts";
 
 export const STRATEGY_VERSION = "scanner-v1.3.0";
 
@@ -39,6 +41,7 @@ export type PendingOrderPlan = {
 };
 
 export type ScannerResult = {
+  quantObservations?: Decision[];
   strategyVersion: string;
   instrument: string;
   label: string;
@@ -694,5 +697,6 @@ export function combineTimeframes(args: {
     }),
     strategies,
     selectedStrategy: selected,
+    quantObservations: observeLiveStrategies(args.instrument, profile.trigger, args.candles[profile.trigger] ?? []),
   };
 }

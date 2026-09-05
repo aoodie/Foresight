@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import "@/components/quant/workspace.css";
+import { PlatformNavigation } from "@/components/quant/navigation";
 
 export const metadata: Metadata = {
   title: "Forex Research | Foresight FX",
@@ -17,7 +19,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className="antialiased">{children}</body>
+      <body className="antialiased"><PlatformNavigation />{children}</body>
     </html>
   );
 }

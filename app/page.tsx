@@ -181,6 +181,7 @@ type PendingOrderPlan = {
   warning: string | null;
 };
 type ScanResult = {
+  quantObservations?: import('@/lib/quant/types').Decision[];
   strategyVersion: string;
   instrument: string;
   label: string;
@@ -356,7 +357,7 @@ export default function Home() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const requestedInstrument = searchParams.get("instrument");
-  const [instrument, setInstrument] = useState(
+  const [instrument, setInstrumentState] = useState(
     instruments.some((item) => item.value === requestedInstrument)
       ? requestedInstrument!
       : "EUR_USD",
@@ -374,6 +375,27 @@ export default function Home() {
   const [message, setMessage] = useState("");
   const [data, setData] = useState<MarketData | null>(null);
   const [quote, setQuote] = useState<Quote | null>(null);
+  const candleSequence = useRef(0);
+  const quoteSequence = useRef(0);
+  const selectedPairRef = useRef(instrument);
+  const selectInstrument = useCallback((value: string) => {
+    if (!instruments.some(item => item.value === value)) return;
+    if (selectedPairRef.current === value) return;
+    selectedPairRef.current = value;
+    candleSequence.current += 1; quoteSequence.current += 1;
+    setData(null); setQuote(null); setInstrumentState(value);
+    try { window.localStorage.setItem("foresight:selected-pair", value); } catch { /* Storage is optional. */ }
+    const url = new URL(window.location.href); url.searchParams.set("instrument", value); window.history.replaceState(null, "", url);
+  }, []);
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      let stored: string | null = null;
+      try { stored = window.localStorage.getItem("foresight:selected-pair"); } catch { /* Storage is optional. */ }
+      const value = requestedInstrument ?? stored;
+      if (value && instruments.some(item => item.value === value)) selectInstrument(value);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [requestedInstrument, selectInstrument]);
   const [account, setAccount] = useState<AccountSummary | null>(null);
   const [openTrades, setOpenTrades] = useState<OpenTrade[]>([]);
   const [tradeFills, setTradeFills] = useState<TradeFill[]>([]);
@@ -539,6 +561,7 @@ export default function Home() {
   }, [scanMode]);
 
   const refreshCandles = useCallback(async () => {
+    const requestId = ++candleSequence.current;
     setLoading(true);
     try {
       const response = await fetch(
@@ -552,21 +575,24 @@ export default function Home() {
             payload.message ||
             "Unable to refresh OANDA candles.",
         );
+      if (requestId !== candleSequence.current) return;
       setData(payload);
       setEnvironment(payload.environment);
     } catch (error) {
+      if (requestId !== candleSequence.current) return;
       setMessage(
         error instanceof Error
           ? error.message
           : "Unable to refresh OANDA candles.",
       );
     } finally {
-      setLoading(false);
+      if (requestId === candleSequence.current) setLoading(false);
     }
   }, [instrument, granularity]);
 
   const refreshQuote = useCallback(
     async (quiet = false) => {
+      const requestId = ++quoteSequence.current;
       try {
         const response = await fetch(
           "/api/oanda/price?instrument=" + instrument + "&t=" + Date.now(),
@@ -579,11 +605,13 @@ export default function Home() {
               payload.message ||
               "Unable to load OANDA live pricing.",
           );
+        if (requestId !== quoteSequence.current) return;
         setQuote(payload);
         setEnvironment(payload.environment);
         setConnection("connected");
         if (!quiet) setMessage("");
       } catch (error) {
+        if (requestId !== quoteSequence.current) return;
         if (!quiet) {
           setConnection("error");
           setMessage(
@@ -1652,7 +1680,7 @@ export default function Home() {
                           <button
                             onClick={() => {
                               setQuote(null);
-                              setInstrument(result.instrument);
+                              selectInstrument(result.instrument);
                             }}
                             className="w-full text-left"
                           >
@@ -1815,7 +1843,7 @@ export default function Home() {
               </div>
               <Select
                 value={instrument}
-                onValueChange={(value) => setInstrument(value)}
+                onValueChange={(value) => selectInstrument(value)}
               >
                 <SelectTrigger className="w-full border-white/10 bg-[#10221d] text-white sm:w-64">
                   <SelectValue />
@@ -1892,7 +1920,7 @@ export default function Home() {
                       value={instrument}
                       onValueChange={(value) => {
                         setQuote(null);
-                        setInstrument(value);
+                        selectInstrument(value);
                       }}
                     >
                       <SelectTrigger className="border-white/10 bg-[#10221d] text-white">
@@ -1906,7 +1934,7 @@ export default function Home() {
                         ))}
                       </SelectContent>
                     </Select>
-                    <Select value={granularity} onValueChange={setGranularity}>
+                    <Select value={granularity} onValueChange={(value) => { candleSequence.current += 1; setData(null); setGranularity(value); }}>
                       <SelectTrigger className="w-20 border-white/10 bg-[#10221d] text-white">
                         <SelectValue />
                       </SelectTrigger>
@@ -2543,6 +2571,7 @@ export default function Home() {
                   indicators and drawing tools
                 </div>
               </div>
+              {marketSetup && <div className="mb-5 grid gap-4 rounded-xl border border-white/10 bg-[#132b23] p-5 md:grid-cols-2"><div><h3 className="font-semibold">What the market is doing</h3><p className="mt-2 text-sm leading-6 text-[#bdd0c5]">{marketSetup.marketRegime?.explanation ?? marketSetup.analysis}</p></div><div><h3 className="font-semibold">What must happen before entry</h3><p className="mt-2 text-sm leading-6 text-[#bdd0c5]">{marketSetup.selectedStrategy?.nextStep ?? "Wait for a completed signal and verified risk."}</p><p className="mt-2 text-xs text-[#8aa29a]">{marketSetup.selectedStrategy?.name ?? "Market scanner"} · {marketSetup.strategyVersion}</p></div>{Boolean(marketSetup.quantObservations?.length) && <details className="md:col-span-2"><summary>What the research strategies see</summary><p className="mt-2 text-xs">Observations from completed candles. These versions are awaiting validation for live execution.</p>{marketSetup.quantObservations?.map(d => <p className="mt-3 text-sm" key={d.strategyId}>{d.strategyId.replaceAll('-', ' ')} · {d.strategyVersion}: {d.explanation}</p>)}</details>}</div>}
               <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_380px]">
                 <TradingViewChart
                   instrument={instrument}
@@ -2573,7 +2602,7 @@ export default function Home() {
                     key={item.value}
                     onClick={() => {
                       setQuote(null);
-                      setInstrument(item.value);
+                      selectInstrument(item.value);
                     }}
                     className="flex items-center justify-between border-b border-white/8 py-3 text-left"
                   >

@@ -22,3 +22,24 @@ Non-repainting tests cover prefix consistency, higher timeframe completion,
 future availability, backfilled timestamps, pivot confirmation and unverified
 external features. Passing these tests does not establish profitability or make
 a research strategy eligible for automatic live trading.
+
+The scanner and background trader attach `quantObservations` through
+`observeLiveStrategies`, which uses the same single-timeframe inputs and
+`decide` function as replay. These observations do not replace the legacy
+scanner's execution rules. The dashboard exposes their reasons separately.
+
+The strategy library, quant research, strategy health, risk and system health
+pages share the new workspace. Journal diagnosis groups completed trades by
+recorded version, market condition, market, timeframe and session. Missing
+entry evidence remains unknown; later reviews cannot rewrite original context.
+
+Model roles support Responses, compatible Chat Completions and Anthropic
+Messages transports. Role keys are encrypted at rest. Changing a provider URL
+requires a new key so existing credentials cannot be forwarded accidentally.
+Provider availability is established when a request is made.
+
+Research uses fixed candidate windows, chronological evaluation, a final
+holdout and doubled-cost stress tests. Reusing a dataset raises a holdout
+warning. These safeguards reduce overfitting risk; they cannot eliminate it.
+Promotion remains disabled pending prospective paper evidence. LuxAlgo
+historical features require explicit non-repainting verification.

@@ -25,31 +25,13 @@ type ChartApi = {
 };
 type TradingViewLibrary = { createChart(container: HTMLElement, options: Record<string, unknown>): ChartApi };
 
-declare global { interface Window { LightweightCharts?: TradingViewLibrary } }
-
 let libraryPromise: Promise<TradingViewLibrary> | null = null;
-
 function loadTradingViewLibrary() {
-  if (typeof window === "undefined") return Promise.reject(new Error("Chart is only available in a browser."));
-  if (window.LightweightCharts) return Promise.resolve(window.LightweightCharts);
-  if (libraryPromise) return libraryPromise;
-  libraryPromise = new Promise((resolve, reject) => {
-    const existing = document.querySelector<HTMLScriptElement>("script[data-foresight-tv]");
-    if (existing) {
-      existing.addEventListener("load", () => window.LightweightCharts ? resolve(window.LightweightCharts) : reject(new Error("TradingView chart library did not load.")), { once: true });
-      existing.addEventListener("error", () => reject(new Error("TradingView chart library could not load.")), { once: true });
-      return;
-    }
-    const script = document.createElement("script");
-    script.dataset.foresightTv = "true";
-    script.src = "https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js";
-    script.async = true;
-    script.onload = () => window.LightweightCharts ? resolve(window.LightweightCharts) : reject(new Error("TradingView chart library did not load."));
-    script.onerror = () => reject(new Error("TradingView chart library could not load."));
-    document.head.appendChild(script);
-  });
+  libraryPromise ??= import("lightweight-charts").then(library => library as unknown as TradingViewLibrary).catch(error => { libraryPromise = null; throw error; });
   return libraryPromise;
 }
+function readViewport(key: string) { try { return window.localStorage.getItem(key); } catch { return null; } }
+function writeViewport(key: string, value: string) { try { window.localStorage.setItem(key, value); } catch { /* Chart interaction works without persistence. */ } }
 
 function unixTime(value: string) { return Math.floor(new Date(value).getTime() / 1000); }
 function decimalsFor(instrument: string) {
@@ -144,7 +126,7 @@ export function TradingViewChart({ instrument, granularity, candles, levels, mar
         updateSeriesData(series, timeScale, latest.candles, latest.markers, false);
         priceLinesRef.current = latest.levels.map((line) => series.createPriceLine({ price: line.price, color: line.color, lineWidth: 2, lineStyle: 0, axisLabelVisible: true, title: line.title }));
       }
-      const savedViewport = window.localStorage.getItem(viewportKey(instrument, granularity));
+      const savedViewport = readViewport(viewportKey(instrument, granularity));
       let restoredViewport = false;
       if (savedViewport) {
         try {
@@ -153,12 +135,12 @@ export function TradingViewChart({ instrument, granularity, candles, levels, mar
             timeScale.setVisibleRange(parsed);
             restoredViewport = true;
           }
-        } catch { window.localStorage.removeItem(viewportKey(instrument, granularity)); }
+        } catch { /* Ignore a malformed saved viewport. */ }
       }
       if (!restoredViewport) timeScale.fitContent();
       const saveViewport = (range: VisibleRange | null) => {
         if (range && Number.isFinite(range.from) && Number.isFinite(range.to)) {
-          window.localStorage.setItem(viewportKey(instrument, granularity), JSON.stringify(range));
+          writeViewport(viewportKey(instrument, granularity), JSON.stringify(range));
         }
       };
       // Lightweight Charts does not always emit its range callback until the

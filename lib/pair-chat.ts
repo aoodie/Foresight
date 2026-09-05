@@ -1,3 +1,4 @@
+import { llmFetch, type LlmProtocol } from "./llm-provider.ts";
 import { aiEndpoint, defaultAiBaseUrl } from "./ai-config.ts";
 
 export type PairChatMessage = { role: "user" | "assistant"; content: string };
@@ -8,6 +9,7 @@ export async function askPairAnalyst(args: {
   apiKey: string;
   model: string;
   baseUrl?: string;
+  protocol?: LlmProtocol;
   instrument: string;
   question: string;
   messages: PairChatMessage[];
@@ -19,7 +21,7 @@ export async function askPairAnalyst(args: {
     recentConversation: args.messages.slice(-10),
     userQuestion: args.question,
   };
-  const response = await fetch(aiEndpoint(args.baseUrl ?? defaultAiBaseUrl, "/responses"), {
+  const response = await llmFetch(aiEndpoint(args.baseUrl ?? defaultAiBaseUrl, "/responses"), {
     method: "POST",
     headers: { Authorization: `Bearer ${args.apiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -28,7 +30,7 @@ export async function askPairAnalyst(args: {
       input: JSON.stringify(input),
       max_output_tokens: 700,
     }),
-  });
+  }, args.protocol);
   const payload = await response.json() as { error?: { message?: string }; output?: Array<{ content?: Array<{ type?: string; text?: string }> }>; id?: string; usage?: Record<string, unknown> };
   if (!response.ok) throw new Error(payload.error?.message || "The LLM provider could not answer this pair question.");
   const answer = payload.output?.flatMap((item) => item.content ?? []).find((item) => item.type === "output_text")?.text?.trim();

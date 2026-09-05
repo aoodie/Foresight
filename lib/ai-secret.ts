@@ -1,3 +1,4 @@
+import { type ModelRole, type LlmProtocol } from "./llm-provider";
 import { env } from "cloudflare:workers";
 import { defaultAiBaseUrl, normalizeAiBaseUrl } from "./ai-config.ts";
 
@@ -12,18 +13,19 @@ async function encryptionKey() {
   return crypto.subtle.importKey("raw", decode(secret), "AES-GCM", false, ["encrypt", "decrypt"]);
 }
 
-export async function saveAiKey(apiKey: string, model = "", baseUrl = defaultAiBaseUrl) {
+export async function saveAiKey(apiKey: string, model = "", baseUrl = defaultAiBaseUrl, role: ModelRole | "primary" = "primary") {
   const normalizedBaseUrl = normalizeAiBaseUrl(baseUrl);
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const encrypted = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, await encryptionKey(), new TextEncoder().encode(apiKey));
   await runtime.DB.prepare("INSERT INTO ai_connection (id, key_ciphertext, key_iv, model, base_url, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET key_ciphertext = excluded.key_ciphertext, key_iv = excluded.key_iv, model = excluded.model, base_url = excluded.base_url, updated_at = excluded.updated_at")
-    .bind("primary", encode(new Uint8Array(encrypted)), encode(iv), model, normalizedBaseUrl, new Date().toISOString()).run();
+    .bind(role, encode(new Uint8Array(encrypted)), encode(iv), model, normalizedBaseUrl, new Date().toISOString()).run();
 }
 
-export async function getAiKey() {
-  const row = await runtime.DB.prepare("SELECT key_ciphertext, key_iv, model, base_url, updated_at FROM ai_connection WHERE id = ?")
-    .bind("primary").first<{ key_ciphertext: string; key_iv: string; model: string; base_url: string | null; updated_at: string }>();
+export async function getAiKey(role: ModelRole | "primary" = "primary") {
+  const row = await runtime.DB.prepare("SELECT key_ciphertext, key_iv, model, base_url, updated_at FROM ai_connection WHERE id IN (?, 'primary') ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END LIMIT 1")
+    .bind(role, role).first<{ key_ciphertext: string; key_iv: string; model: string; base_url: string | null; updated_at: string }>();
   if (!row) return null;
+  const profile = role === "primary" ? null : await runtime.DB.prepare("SELECT model, protocol FROM model_profiles WHERE role = ?").bind(role).first<{ model: string; protocol: LlmProtocol }>();
   const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv: decode(row.key_iv) }, await encryptionKey(), decode(row.key_ciphertext));
-  return { apiKey: new TextDecoder().decode(decrypted), model: row.model?.trim() ?? "", baseUrl: normalizeAiBaseUrl(row.base_url ?? defaultAiBaseUrl), updatedAt: row.updated_at };
+  return { apiKey: new TextDecoder().decode(decrypted), model: profile?.model ?? row.model?.trim() ?? "", protocol: profile?.protocol ?? "responses" as LlmProtocol, baseUrl: normalizeAiBaseUrl(row.base_url ?? defaultAiBaseUrl), updatedAt: row.updated_at };
 }
