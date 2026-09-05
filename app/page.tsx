@@ -1004,7 +1004,7 @@ export default function Home() {
             thesis: marketAiPlan?.analysis ?? marketSetup.analysis,
             evidence: marketAiPlan?.reasons?.join(" ") ?? marketSetup.reasons.join(" "),
             invalidation: marketAiPlan?.invalidation ?? marketSetup.invalidation,
-            metadata: { strategyVersion: marketSetup.strategyVersion, score: marketSetup.score, rsi: marketSetup.rsi, atrPercent: marketSetup.atrPercent, marketRegime: marketSetup.marketRegime, timeframeAlignment: marketSetup.timeframeAlignment },
+            metadata: { strategyId: marketAiPlan ? "llm-assisted/research" : `scanner/${marketSetup.selectedStrategy?.id ?? "trend-continuation"}`, aiDecisionId: aiData?.decisionId ?? null, strategyVersion: marketAiPlan ? (aiData?.decisionId ? `decision:${aiData.decisionId}` : null) : marketSetup.strategyVersion, signalTime: marketSetup.updatedAt, parameters: { mode: scanMode }, score: marketSetup.score, rsi: marketSetup.rsi, atrPercent: marketSetup.atrPercent, marketRegime: marketSetup.marketRegime, timeframeAlignment: marketSetup.timeframeAlignment },
           },
         }),
       });

@@ -38,3 +38,25 @@ test('replay enters after decisions and charges costs',()=>{
  assert.ok(r.trades.length>0); assert.ok(r.trades.every(t=>t.entryTime>=t.signal.asOf&&t.costR>0));
  assert.throws(()=>replay({instrument:'EUR_USD',timeframe:'H1',bars,strategy:strategies[0],costBps:0}),/cost/);
 });
+test('historical cache fetches only uncached chunks and CSV validates ordering',async()=>{
+ const { historicalData, parseCandleCsv }=await vite.ssrLoadModule('/lib/quant/history.ts');
+ let calls=0;const store=new Map();const cache={async read(k){return store.get(k)??null;},async write(k,v){store.set(k,v);}};
+ const provider={id:'test',async fetchHistory(r){calls++;return bars.filter(b=>b.openTime>=r.from&&b.closeTime<=r.to);}};
+ const query={instrument:'EUR_USD',timeframe:'H1',from:0,to:220*3600000};
+ assert.equal((await historicalData(provider,cache,query)).length,220); await historicalData(provider,cache,query);assert.equal(calls,1);
+ assert.throws(()=>parseCandleCsv('time,open,high,low,close\n2020-01-01,1,2,0,1','H1'),/Invalid/);
+});
+test('research candidate selection cannot observe final holdout returns',async()=>{
+ const {research}=await vite.ssrLoadModule('/lib/quant/research.ts');
+ const many=Array.from({length:1000},(_,i)=>({...bars[i%bars.length],openTime:i*3600000,closeTime:(i+1)*3600000,availableAt:(i+1)*3600000}));
+ const base={instrument:'EUR_USD',timeframe:'H1',bars:many,strategy:strategies[2],costBps:2};
+ const first=research(base); const changed=research({...base,bars:many.map((b,i)=>i<800?b:{...b,close:b.open+1,high:b.open+2})});
+ assert.deepEqual(first.candidate,changed.candidate);assert.deepEqual(first.folds,changed.folds);assert.equal(first.executionEnabled,false);
+});
+test('risk sizing respects JPY conversion, minimums and broker increments',async()=>{
+ const {sizePosition,portfolioExposure}=await vite.ssrLoadModule('/lib/quant/risk.ts');
+ const sized=sizePosition({equity:10000,riskPercent:1,entry:150,stop:149,spec:{unitStep:100,minUnits:100,maxUnits:100000,tickSize:.001,cashPerPriceUnit:1/150}});
+ assert.equal(sized.units,15000);assert.equal(sized.riskAmount,100);
+ assert.equal(sizePosition({equity:1,riskPercent:1,entry:150,stop:149,spec:{unitStep:100,minUnits:100,maxUnits:100000,tickSize:.001,cashPerPriceUnit:1/150}}),null);
+ assert.equal(portfolioExposure([{instrument:'USD_JPY',riskAmount:null}],10000).complete,false);
+});

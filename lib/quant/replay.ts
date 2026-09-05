@@ -28,7 +28,7 @@ export function replay(input: { instrument: string; timeframe: string; bars: rea
         position = null;
       }
     }
-    const decision = decide(marketContext({ ...input, bars: bars.slice(0, i + 1), asOf: bar.closeTime, historical: true }), input.strategy);
+    const decision = decide(marketContext({ ...input, bars: bars.slice(Math.max(0, i + 1 - Math.max(55, input.strategy.parameters.lookback + 2)), i + 1), asOf: bar.closeTime, historical: true }), input.strategy);
     decisions.push(decision);
     if (!position && decision.action !== "wait") pending = decision;
   }

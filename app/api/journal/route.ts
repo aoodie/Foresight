@@ -1,3 +1,4 @@
+import { journalInsights } from "@/lib/journal-context";
 import { headers } from "next/headers";
 import { NextResponse } from "next/server";
 import { backfillJournalLifecycleEvents, createJournalEntry, reconcileJournalFromBrokerSnapshot, updateJournalEntry } from "@/lib/trading-records";
@@ -29,10 +30,10 @@ export async function GET(request: Request) {
   }
   const lifecycleBackfilled = await backfillJournalLifecycleEvents(limit);
   const [rows, eventCount] = await Promise.all([
-    runtime.DB.prepare("SELECT * FROM trade_journal ORDER BY COALESCE(opened_at, created_at) DESC LIMIT ?").bind(limit).all(),
+    runtime.DB.prepare("SELECT j.*, c.context_json FROM trade_journal j LEFT JOIN trade_entry_context c ON c.journal_id = j.id ORDER BY COALESCE(j.opened_at, j.created_at) DESC LIMIT ?").bind(limit).all(),
     runtime.DB.prepare("SELECT COUNT(*) AS count FROM trade_journal_events").first<{ count: number }>(),
   ]);
-  return NextResponse.json({ entries: rows.results ?? [], reconciliation, reconciliationError, lifecycleBackfilled, lifecycleEventCount: Number(eventCount?.count ?? 0) });
+  return NextResponse.json({ entries: (rows.results ?? []).map((row) => ({ ...row, ...journalInsights(row as Record<string, unknown>) })), reconciliation, reconciliationError, lifecycleBackfilled, lifecycleEventCount: Number(eventCount?.count ?? 0) });
 }
 
 export async function POST(request: Request) {

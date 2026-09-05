@@ -1,3 +1,4 @@
+import { entryContext } from "./journal-context";
 import { env } from "cloudflare:workers";
 import { foresightJournalId, foresightTradeSource, type JournalTradeSource } from "./trade-monitoring";
 import { standardLots } from "./trade-risk";
@@ -138,10 +139,10 @@ export async function createJournalEntry(input: JournalRecordInput) {
       account_id = excluded.account_id, instrument = excluded.instrument, direction = excluded.direction,
       style = trade_journal.style, strategy_name = COALESCE(trade_journal.strategy_name, excluded.strategy_name), setup_type = COALESCE(trade_journal.setup_type, excluded.setup_type),
       status = CASE WHEN trade_journal.status IN ('closed', 'cancelled', 'win', 'loss', 'breakeven') AND excluded.status IN ('planned', 'submitted', 'open') THEN trade_journal.status ELSE excluded.status END,
-      entry_price = excluded.entry_price, stop_loss = excluded.stop_loss,
-      take_profit_1 = excluded.take_profit_1, take_profit_2 = excluded.take_profit_2,
-      units = excluded.units, lots = COALESCE(excluded.lots, trade_journal.lots),
-      risk_percent = excluded.risk_percent, risk_amount = excluded.risk_amount,
+      entry_price = COALESCE(trade_journal.entry_price, excluded.entry_price), stop_loss = COALESCE(trade_journal.stop_loss, excluded.stop_loss),
+      take_profit_1 = COALESCE(trade_journal.take_profit_1, excluded.take_profit_1), take_profit_2 = COALESCE(trade_journal.take_profit_2, excluded.take_profit_2),
+      units = COALESCE(trade_journal.units, excluded.units), lots = COALESCE(excluded.lots, trade_journal.lots),
+      risk_percent = COALESCE(trade_journal.risk_percent, excluded.risk_percent), risk_amount = COALESCE(trade_journal.risk_amount, excluded.risk_amount),
       pnl = COALESCE(excluded.pnl, trade_journal.pnl), broker_trade_id = COALESCE(excluded.broker_trade_id, trade_journal.broker_trade_id),
       thesis = COALESCE(trade_journal.thesis, excluded.thesis), evidence = COALESCE(trade_journal.evidence, excluded.evidence),
       invalidation = COALESCE(trade_journal.invalidation, excluded.invalidation), notes = COALESCE(excluded.notes, trade_journal.notes),
@@ -154,6 +155,7 @@ export async function createJournalEntry(input: JournalRecordInput) {
     input.brokerTradeId ?? null, input.thesis ?? null, input.evidence ?? null, input.invalidation ?? null,
     input.notes ?? null, input.openedAt ?? null, input.closedAt ?? null, json(metadata),
   ).run();
+  await runtime.DB.prepare("INSERT OR IGNORE INTO trade_entry_context (journal_id, captured_at, context_json) VALUES (?, ?, ?)").bind(id, now, JSON.stringify(entryContext(input))).run();
   await appendCurrentJournalEvent(id, metadata && typeof metadata === "object" ? metadata as Record<string, unknown> : undefined);
   if (input.closedAt && input.openedAt) await appendHistoricalOpenEvent(id);
   return id;

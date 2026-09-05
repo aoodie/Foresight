@@ -1,3 +1,4 @@
+import { reserveExecution, finishExecution } from "@/lib/execution-intents";
 import { NextResponse } from "next/server";
 import { fetchOandaAccountSummary, fetchOandaPrice, OandaApiError, submitOandaMarketOrder } from "@/lib/oanda-api";
 import { getOandaToken } from "@/lib/oanda-secret";
@@ -39,6 +40,8 @@ export async function POST(request: Request) {
     const status = error instanceof OandaApiError ? error.status : 502;
     return NextResponse.json({ error: error instanceof Error ? error.message : "Unable to verify the live account and price." }, { status });
   }
+  const quoteAge = Date.now() - Date.parse(quote.time);
+  if (!Number.isFinite(quoteAge) || quoteAge < -5000 || quoteAge > 60000) return NextResponse.json({ error: "The broker quote is stale. Refresh before submitting." }, { status: 409 });
   if (!quote.tradeable) return NextResponse.json({ error: "Order blocked because OANDA reports that the instrument is not tradeable." }, { status: 409 });
   const liveEntry = body.units! > 0 ? quote.ask : quote.bid;
   const protection = validateProtectedOrder({ instrument: body.instrument!, units: body.units!, entry: liveEntry, stopLoss: body.stopLoss, takeProfit: body.takeProfit });
@@ -50,6 +53,12 @@ export async function POST(request: Request) {
   if (actualRiskAmount === null) return NextResponse.json({ error: "Order blocked because the cash risk for these units could not be verified." }, { status: 409 });
   const journal = body.journal ?? {};
   const journalMetadata = journal.metadata && typeof journal.metadata === "object" ? journal.metadata as Record<string, unknown> : {};
+  const signalTime = typeof journalMetadata.signalTime === "string" ? journalMetadata.signalTime : "";
+  const signalAge = Date.now() - Date.parse(signalTime);
+  const maximumAge = journal.style === "scalping" ? 10 * 60000 : journal.style === "swing" ? 2 * 3600000 : 30 * 60000;
+  if (!Number.isFinite(signalAge) || signalAge < -5000 || signalAge > maximumAge) return NextResponse.json({ error: "This signal is missing its timestamp or is too old. Refresh the market analysis before submitting." }, { status: 409 });
+  const intent = await reserveExecution({ accountId: connection.accountId, environment: connection.environment, instrument: body.instrument!, direction: body.units! > 0 ? "long" : "short", signalTime, strategyVersion: String(journalMetadata.strategyVersion ?? "manual"), request: { instrument: body.instrument, units: body.units, stop: body.stopLoss, target: body.takeProfit, signalTime } });
+  if (!intent.claimed) return NextResponse.json(intent.result ?? { error: "This signal was already submitted. Reconcile with the broker before trying another order." }, { status: intent.result ? 200 : 409 });
   const lots = standardLots(body.instrument!, body.units!);
   const correlationId = crypto.randomUUID();
   let journalId: string | null = crypto.randomUUID();
@@ -95,10 +104,13 @@ export async function POST(request: Request) {
     } catch (error) {
       journalWarning = error instanceof Error ? error.message : "The filled order could not be written to the journal.";
     }
-    return NextResponse.json({ mode: "live", accountEnvironment: connection.environment, status: brokerTradeId ? "submitted" : "netted", journalId, journalWarning, sizing: { units: Math.abs(body.units!), lots, riskSafeUnits: sizing.units, riskAmount: actualRiskAmount }, ...result });
+    const responseBody = { mode: "live", accountEnvironment: connection.environment, status: brokerTradeId ? "submitted" : "netted", journalId, journalWarning, sizing: { units: Math.abs(body.units!), lots, riskSafeUnits: sizing.units, riskAmount: actualRiskAmount }, ...result };
+    await finishExecution(intent.id, "filled", responseBody);
+    return NextResponse.json(responseBody);
   } catch (error) {
+    try { await finishExecution(intent.id, "reconciliation_required"); } catch { /* The reservation still blocks replay if storage is unavailable. */ }
     if (journalId && !orderSubmitted) {
-      try { await updateJournalEntry({ id: journalId, status: "cancelled", notes: error instanceof Error ? error.message : "Order submission failed." }); } catch { /* Preserve the original order error. */ }
+      try { await updateJournalEntry({ id: journalId, status: "reconciliation_required", notes: error instanceof Error ? error.message : "Order submission failed." }); } catch { /* Preserve the original order error. */ }
     }
     try { await writeSystemLog({ level: "error", category: "execution", event: "order.failed", message: error instanceof Error ? error.message : "Order submission failed.", instrument: body.instrument, environment: connection.environment, correlationId }); } catch { /* Preserve the original order error. */ }
     const status = error instanceof OandaApiError ? error.status : 500;

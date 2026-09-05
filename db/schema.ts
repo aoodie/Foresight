@@ -113,3 +113,33 @@ export const aiDecisionCache = sqliteTable("ai_decision_cache", {
   expiresAt: text("expires_at").notNull(),
   hitCount: integer("hit_count").notNull().default(0),
 });
+
+export const tradeEntryContext = sqliteTable("trade_entry_context", {
+  journalId: text("journal_id").primaryKey(),
+  capturedAt: text("captured_at").notNull(),
+  contextJson: text("context_json").notNull(),
+});
+export const quantHistory = sqliteTable("quant_history", {
+  key: text("key").primaryKey(),
+  barsJson: text("bars_json").notNull(),
+  fetchedAt: text("fetched_at").notNull(),
+});
+export const quantResearchRuns = sqliteTable("quant_research_runs", {
+  id: text("id").primaryKey(),
+  createdAt: text("created_at").notNull(),
+  datasetHash: text("dataset_hash").notNull(),
+  reportJson: text("report_json").notNull(),
+});
+export const executionIntents = sqliteTable("execution_intents", {
+  id: text("id").primaryKey(),
+  createdAt: text("created_at").notNull(),
+  requestJson: text("request_json").notNull(),
+  status: text("status").notNull(),
+  resultJson: text("result_json"),
+});
+export const modelProfiles = sqliteTable("model_profiles", {
+  role: text("role").primaryKey(),
+  protocol: text("protocol").notNull(),
+  model: text("model").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});

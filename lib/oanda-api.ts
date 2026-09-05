@@ -54,7 +54,7 @@ function hostFor(environment: OandaEnvironment) {
 async function oandaJson<T>(url: string, token: string): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
+    response = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store", signal: AbortSignal.timeout(20000) });
   } catch {
     throw new OandaApiError("OANDA could not be reached. Try again shortly.", 502);
   }
