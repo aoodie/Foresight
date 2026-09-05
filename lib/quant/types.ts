@@ -1,0 +1,8 @@
+export type Bar = Readonly<{ openTime: number; closeTime: number; availableAt: number; open: number; high: number; low: number; close: number; complete: boolean }>;
+export type Regime = "strong_trend" | "weak_trend" | "range" | "compression" | "volatility_expansion" | "news_driven" | "uncertain";
+export type ExternalFeature = { provider: string; name: string; value: number; observedAt: number; availableAt: number; verifiedNonRepainting: boolean; evidence: string };
+export type MarketContext = Readonly<{ instrument: string; timeframe: string; asOf: number; bars: readonly Bar[]; higherBars: readonly Bar[]; newsRisk: boolean | null; external: readonly ExternalFeature[] }>;
+export type StrategyId = "trend-pullback" | "range-breakout" | "liquidity-reclaim" | "imbalance-continuation";
+export type Strategy = Readonly<{ id: StrategyId; name: string; version: string; parameters: Readonly<{ lookback: number; stopAtr: number; targetR: number; maxBars: number }>; markets: readonly string[]; timeframes: readonly string[]; preferredRegimes: readonly Regime[]; avoidRegimes: readonly Regime[]; entryRules: string; exitRules: string; invalidation: string; lifecycle: "research" | "paper" }>;
+export type Decision = { strategyId: StrategyId; strategyVersion: string; strategyInstance: string; instrument: string; timeframe: string; asOf: number; regime: Regime; action: "long" | "short" | "wait"; entry: number | null; stop: number | null; target: number | null; score: number; explanation: string; invalidation: string; features: { atr: number; efficiency: number; direction: number }; externalEvidence: readonly ExternalFeature[] };
+export const timeframeMs: Readonly<Record<string, number>> = Object.freeze({ M5: 300000, M15: 900000, H1: 3600000, H4: 14400000 });
