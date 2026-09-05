@@ -87,9 +87,10 @@ export async function submitOandaMarketOrder(args: {
       body: JSON.stringify(body), cache: "no-store",
     });
   } catch { throw new OandaApiError("OANDA could not be reached. Try again shortly.", 502); }
-  const payload = (await response.json().catch(() => ({}))) as { orderFillTransaction?: { id?: string; units?: string; tradeOpened?: { tradeID?: string } }; orderCreateTransaction?: { id?: string }; errorMessage?: string };
+  const payload = (await response.json().catch(() => ({}))) as { orderFillTransaction?: { id?: string; units?: string; tradeOpened?: { tradeID?: string } }; orderCreateTransaction?: { id?: string }; orderCancelTransaction?: { reason?: string }; errorMessage?: string };
   if (!response.ok) throw new OandaApiError(payload.errorMessage || `OANDA order failed (${response.status}).`, response.status);
-  return { orderId: payload.orderFillTransaction?.id ?? payload.orderCreateTransaction?.id ?? null, tradeId: payload.orderFillTransaction?.tradeOpened?.tradeID ?? null, units: payload.orderFillTransaction?.units ?? String(args.units) };
+  if (!payload.orderFillTransaction?.id) throw new OandaApiError(payload.orderCancelTransaction?.reason || "OANDA did not confirm an order fill.", 502);
+  return { orderId: payload.orderFillTransaction.id, tradeId: payload.orderFillTransaction?.tradeOpened?.tradeID ?? null, units: payload.orderFillTransaction?.units ?? String(args.units) };
 }
 
 export async function closeOandaTrade(args: { token: string; environment: OandaEnvironment; accountId: string; tradeId: string }) {
@@ -105,7 +106,8 @@ export async function closeOandaTrade(args: { token: string; environment: OandaE
   } catch { throw new OandaApiError("OANDA could not be reached. Try again shortly.", 502); }
   const payload = (await response.json().catch(() => ({}))) as { orderFillTransaction?: { id?: string; pl?: string }; errorMessage?: string };
   if (!response.ok) throw new OandaApiError(payload.errorMessage || `OANDA could not close trade (${response.status}).`, response.status);
-  return { transactionId: payload.orderFillTransaction?.id ?? null, pnl: Number(payload.orderFillTransaction?.pl ?? 0) };
+  if (!payload.orderFillTransaction?.id) throw new OandaApiError("OANDA did not confirm that the trade was closed.", 502);
+  return { transactionId: payload.orderFillTransaction.id, pnl: Number(payload.orderFillTransaction?.pl ?? 0) };
 }
 
 export async function fetchOandaAccountId(token: string, environment: OandaEnvironment) {
@@ -231,11 +233,22 @@ export async function fetchOandaOrderFills(args: {
     type: "ORDER_FILL",
     pageSize: "1000",
   });
-  const payload = await oandaJson<OandaTransactionPayload>(
-    `https://${hostFor(args.environment)}/v3/accounts/${encodeURIComponent(args.accountId)}/transactions?${params.toString()}`,
-    args.token,
-  );
-  return (payload.transactions ?? []).flatMap((transaction) => {
+  const baseUrl = `https://${hostFor(args.environment)}/v3/accounts/${encodeURIComponent(args.accountId)}/transactions`;
+  const index = await oandaJson<{ pages?: string[] }>(`${baseUrl}?${params.toString()}`, args.token);
+  if (!Array.isArray(index.pages)) throw new OandaApiError("OANDA returned no usable transaction history.", 502);
+  const transactions: NonNullable<OandaTransactionPayload["transactions"]> = [];
+  for (const page of index.pages) {
+    const url = new URL(page);
+    const expected = new URL(baseUrl);
+    if (url.origin !== expected.origin || url.pathname !== `${expected.pathname}/idrange` || url.username || url.password) {
+      throw new OandaApiError("OANDA returned an invalid transaction page.", 502);
+    }
+    url.searchParams.set("type", "ORDER_FILL");
+    const payload = await oandaJson<OandaTransactionPayload>(url.toString(), args.token);
+    if (!Array.isArray(payload.transactions)) throw new OandaApiError("OANDA returned no usable transaction page.", 502);
+    transactions.push(...payload.transactions);
+  }
+  return transactions.filter((transaction) => transaction.type === "ORDER_FILL").flatMap((transaction) => {
     const pnl = Number(transaction.pl ?? 0);
     if (!transaction.id || !transaction.time || !Number.isFinite(pnl)) return [];
     return [{

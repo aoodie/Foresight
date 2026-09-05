@@ -50,3 +50,44 @@ test("ranks a strongly trending instrument with an actionable bias", async () =>
   assert.equal(result.riskReward1, 1.5);
   assert.equal(result.reasons.length, 4);
 });
+
+const brokerArgs = { token: "test-token", environment: "practice", accountId: "test-account" };
+
+test("loads every transaction page instead of treating the index as empty history", async (t) => {
+  const { fetchOandaOrderFills } = await vite.ssrLoadModule("/lib/oanda-api.ts");
+  const base = "https://api-fxpractice.oanda.com/v3/accounts/test-account/transactions";
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async (input) => {
+    const url = new URL(input);
+    calls.push(url);
+    if (url.pathname.endsWith("/transactions")) return Response.json({ pages: [`${base}/idrange?from=1&to=2`, `${base}/idrange?from=3&to=4`] });
+    assert.equal(url.searchParams.get("type"), "ORDER_FILL");
+    return Response.json({ transactions: [{ id: url.searchParams.get("from"), type: "ORDER_FILL", time: "2026-01-01T12:00:00Z", pl: "-25", units: "100" }, { id: "other", type: "MARKET_ORDER", time: "2026-01-01T12:00:00Z" }] });
+  });
+  const fills = await fetchOandaOrderFills({ ...brokerArgs, from: new Date("2026-01-01") });
+  assert.equal(calls.length, 3);
+  assert.deepEqual(fills.map((fill) => fill.id), ["1", "3"]);
+  assert.equal(fills.reduce((sum, fill) => sum + fill.pnl, 0), -50);
+});
+
+test("does not forward broker credentials to a foreign transaction page", async (t) => {
+  const { fetchOandaOrderFills } = await vite.ssrLoadModule("/lib/oanda-api.ts");
+  const fetchMock = t.mock.method(globalThis, "fetch", async () => Response.json({ pages: ["https://example.com/transactions/idrange"] }));
+  await assert.rejects(fetchOandaOrderFills({ ...brokerArgs, from: new Date("2026-01-01") }), /invalid transaction page/);
+  assert.equal(fetchMock.mock.callCount(), 1);
+});
+
+test("rejects cancelled or unconfirmed market orders even on HTTP success", async (t) => {
+  const { submitOandaMarketOrder } = await vite.ssrLoadModule("/lib/oanda-api.ts");
+  t.mock.method(globalThis, "fetch", async () => Response.json({ orderCreateTransaction: { id: "1" }, orderCancelTransaction: { reason: "INSUFFICIENT_MARGIN" } }));
+  await assert.rejects(submitOandaMarketOrder({ ...brokerArgs, instrument: "EUR_USD", units: 100 }), /INSUFFICIENT_MARGIN/);
+});
+
+test("returns confirmed fills and rejects unconfirmed trade closes", async (t) => {
+  const { submitOandaMarketOrder, closeOandaTrade } = await vite.ssrLoadModule("/lib/oanda-api.ts");
+  t.mock.method(globalThis, "fetch", async () => Response.json({ orderFillTransaction: { id: "2", units: "100", tradeOpened: { tradeID: "3" } } }));
+  assert.deepEqual(await submitOandaMarketOrder({ ...brokerArgs, instrument: "EUR_USD", units: 100 }), { orderId: "2", tradeId: "3", units: "100" });
+  t.mock.restoreAll();
+  t.mock.method(globalThis, "fetch", async () => Response.json({}));
+  await assert.rejects(closeOandaTrade({ ...brokerArgs, tradeId: "3" }), /did not confirm/);
+});

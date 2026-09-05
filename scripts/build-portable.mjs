@@ -1,0 +1,11 @@
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+const root = fileURLToPath(new URL("..", import.meta.url));
+const duration = process.env.SITES_BUILD_TIMEOUT ?? "3m";
+const match = /^(\d+(?:\.\d+)?)(ms|s|m)?$/.exec(duration);
+if (!match || Number(match[1]) <= 0) throw new Error("SITES_BUILD_TIMEOUT must be a positive duration such as 180s or 3m.");
+const timeout = Number(match[1]) * ({ ms: 1, s: 1000, m: 60000 }[match[2] ?? "s"]);
+const child = spawn(process.execPath, [fileURLToPath(new URL("../node_modules/vinext/dist/cli.js", import.meta.url)), "build"], { cwd: root, stdio: "inherit", env: { ...process.env, WRANGLER_WRITE_LOGS: "false", WRANGLER_LOG_PATH: ".wrangler/logs", MINIFLARE_REGISTRY_PATH: ".wrangler/registry" } });
+const timer = setTimeout(() => { console.error("Build exceeded SITES_BUILD_TIMEOUT."); child.kill("SIGKILL"); }, timeout);
+child.on("error", (error) => { clearTimeout(timer); console.error(error.message); process.exitCode = 1; });
+child.on("exit", (code) => { clearTimeout(timer); process.exitCode = code ?? 1; });

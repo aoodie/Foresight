@@ -167,3 +167,53 @@ The timeout defaults can be overridden for a controlled canary with `SITES_INSTA
 
 - [vinext Documentation](https://github.com/cloudflare/vinext)
 - [Drizzle D1 Guide](https://orm.drizzle.team/docs/get-started/d1-new)
+
+## Learning lab upgrade
+
+Open `/learning` from the dashboard navigation. Load up to 5,000 completed OANDA
+H1 midpoint candles (requires the existing connection/database setup), or import
+1,500–20,000 completed OHLC candles as JSON. Data is evaluated in the browser;
+imported files are not uploaded to a server. Enter a realistic round-trip cost
+in basis points before evaluating.
+
+The learner selects a momentum lookback from the fixed set 6, 12, 24, 48.
+It uses the first 40% for initial training, four expanding forward folds across
+the next 40%, and a final 20% holdout. Training ends 50 bars before each evaluation
+window. Signals use previous completed closes; simulated trades enter at the
+next open and exit at that bar's close. Selection maximizes a conservative
+training mean estimate. The final candidate is selected without holdout data.
+
+Promotion means **eligible for paper review only**, never automatic live trading.
+Gates require sufficient holdout trades, three profitable forward folds, positive
+forward mean, a positive conservative holdout mean estimate, positive net returns
+at double cost, and improvement against a fixed 24-bar momentum benchmark without
+worse drawdown. Export reports include parameters, folds, gates and a SHA-256
+candle fingerprint for audit comparison. No results are fabricated or seeded.
+
+This is a bounded research learner, not continuous production model retraining.
+It does not modify scanner rules, broker risk limits or the autonomous trader.
+Each evaluation relearns on the supplied historical data. Reusing a holdout,
+trying other instruments repeatedly or changing costs after seeing results can
+still overfit. The mean estimate assumes independent returns and does not certify
+statistical significance under serial dependence or repeated trials. Use genuinely
+new future data and prospective paper results for subsequent decisions.
+
+Midpoint fills, constant costs and additive bps are research approximations,
+not account-equity returns. Financing, variable spreads, liquidity, execution delay,
+session gaps and currency conversion are not independently simulated. Imported
+files must have consistent instrument/timeframe and unsmoothed price semantics.
+See [chronological validation](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html)
+and [OANDA candle definitions](https://developer.oanda.com/rest-live-v20/instrument-ep/).
+
+### Upgrade validation
+
+- `npm run typecheck`: checks the complete application, including Workers bindings.
+- `npm test`: portable bounded production build plus all regression tests.
+- `npm run test:unit`: runs tests against an existing build.
+- `npm run lint`: application lint checks.
+
+The build now works on macOS and Linux without GNU timeout. `SITES_BUILD_TIMEOUT`
+accepts a positive duration such as `180s` or `3m` (default). Dependency updates
+include matched React/React DOM/RSC patch versions and compatible updates within
+existing declared ranges. Major TypeScript, Zod and Vinext beta migrations remain
+separate work because they require runtime migration testing.
