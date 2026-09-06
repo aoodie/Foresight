@@ -1005,7 +1005,7 @@ export default function Home() {
       return;
     }
     if (!validProtectedPlan) {
-      setOrderStatus("Order blocked: the stop and TP1 must remain correctly ordered at the live quote with at least 1.5 risk/reward.");
+      setOrderStatus("Order blocked: the loss limit and first profit target must be on the correct sides of the current price. The planned gain must be at least 1.5 times the planned loss.");
       return;
     }
     setOrderStatus("Submitting order…");
@@ -1388,9 +1388,9 @@ export default function Home() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="scalping">Scalping</SelectItem>
-                      <SelectItem value="intraday">Intraday</SelectItem>
-                      <SelectItem value="swing">Swing</SelectItem>
+                      <SelectItem value="scalping">Very short trades</SelectItem>
+                      <SelectItem value="intraday">Within the day</SelectItem>
+                      <SelectItem value="swing">Several days</SelectItem>
                     </SelectContent>
                   </Select>
                   <Button
@@ -1425,7 +1425,7 @@ export default function Home() {
                   <div className="grid gap-4 lg:grid-cols-[.8fr_1.5fr]">
                     <div>
                       <p className="text-[10px] tracking-[.14em] text-[#89f6bf]">
-                        TOP TECHNICAL CANDIDATE
+                        HIGHEST-RANKED MARKET TO REVIEW
                       </p>
                       <p className="mt-1 text-2xl font-semibold">
                         {topSetup.label}
@@ -1434,7 +1434,7 @@ export default function Home() {
                         <Bias bias={topSetup.bias} />
                         <span className="ml-2"><RegimeBadge regime={topSetup.marketRegime} /></span>
                         <span className="ml-2 text-xs text-[#8aa29a]">
-                          Score {topSetup.score}/100
+                          Rule match {topSetup.score}/100
                         </span>
                       </div>
                     </div>
@@ -1442,9 +1442,7 @@ export default function Home() {
                       <p className="text-sm leading-6 text-[#c0d1ca]">
                         {topSetup.analysis}
                       </p>
-                      <p className="mt-1 text-xs text-[#81978f]">
-                        {topSetup.reasons.join(" · ")}
-                      </p>
+                      <p className="mt-2 text-xs leading-6 text-[#81978f]">{topSetup.marketRegime.playbook}</p>
                       <p className="mt-2 text-[11px] text-[#89f6bf]">
                         Open detailed market study →
                       </p>
@@ -1462,8 +1460,7 @@ export default function Home() {
                     {scanner.timeframes.context} context →{" "}
                     {scanner.timeframes.setup} setup →{" "}
                     {scanner.timeframes.trigger} entry trigger. A trade needs at
-                    least two aligned timeframes plus LuxAlgo-grounded
-                    confirmation.
+                    least two charts pointing in the same direction, plus the required entry checks.
                   </>
                 ) : (
                   "Choose a trading style, then scan all 12 markets with aligned timeframes."
@@ -1475,13 +1472,13 @@ export default function Home() {
                     <tr>
                       <th className="px-5 py-3 font-medium">Rank</th>
                       <th className="px-3 py-3 font-medium">Market</th>
-                      <th className="px-3 py-3 font-medium">Bias</th>
-                      <th className="px-3 py-3 font-medium">Regime</th>
+                      <th className="px-3 py-3 font-medium">Direction</th>
+                      <th className="px-3 py-3 font-medium">Market condition</th>
                       <th className="px-3 py-3 font-medium">Score</th>
-                      <th className="px-3 py-3 font-medium">Align</th>
-                      <th className="px-3 py-3 font-medium">RSI</th>
+                      <th className="px-3 py-3 font-medium">Charts agreeing</th>
+                      <th className="px-3 py-3 font-medium">Buying / selling pressure</th>
                       <th className="px-5 py-3 font-medium">
-                        Trade thesis & entry conditions
+                        Why this idea · What to wait for
                       </th>
                     </tr>
                   </thead>
@@ -1510,7 +1507,7 @@ export default function Home() {
                         </td>
                         <td className="px-3 py-4">
                           <RegimeBadge regime={result.marketRegime} />
-                          <p className="mt-1 text-[9px] uppercase tracking-[.08em] text-[#71887f]">{result.marketRegime.volatility} volatility · {result.marketRegime.confidence}%</p>
+                          <p className="mt-1 text-[9px] uppercase tracking-[.08em] text-[#71887f]">{result.marketRegime.volatility === "high" ? "Large price swings" : result.marketRegime.volatility === "low" ? "Small price moves" : "Usual price movement"}</p>
                         </td>
                         <td className="px-3 py-4 font-mono">{result.score}</td>
                         <td className="px-3 py-4">
@@ -1535,7 +1532,7 @@ export default function Home() {
                           </div>
                         </td>
                         <td className="px-3 py-4 font-mono">
-                          {result.rsi.toFixed(0)}
+                          <span title={`Momentum indicator (RSI): ${result.rsi.toFixed(0)}/100`}>{result.rsi >= 70 ? "Strong buying; may pull back" : result.rsi <= 30 ? "Strong selling; may bounce" : result.rsi > 55 ? "More buying" : result.rsi < 45 ? "More selling" : "Balanced"}</span>
                         </td>
                         <td className="max-w-[520px] px-5 py-4">
                           <p className="text-xs leading-5 text-[#c0d1ca]">
@@ -1547,7 +1544,7 @@ export default function Home() {
                             ))}
                           </ul>
                           <p className="mt-2 rounded-md border border-amber-200/10 bg-amber-200/[.035] px-2 py-1.5 text-[10px] leading-4 text-amber-100/75">
-                            <span className="font-medium text-amber-100">Risk / invalidation:</span> {result.invalidation}
+                            <span className="font-medium text-amber-100">What would make this idea fail:</span> {result.invalidation}
                           </p>
                           {result.supportResistance && (
                             <div className="mt-2 flex flex-wrap gap-1.5 text-[9px]">
@@ -1770,7 +1767,7 @@ export default function Home() {
                                 ))}
                               </ul>
                               <p className="mt-3 text-[11px] leading-4 text-rose-200/75">
-                                Invalidation: {plan.invalidation}
+                                The idea fails if: {plan.invalidation}
                               </p>
                               <div className="mt-4 flex items-start gap-2 rounded-lg border border-amber-300/10 bg-amber-300/[.05] p-3 text-[11px] leading-4 text-amber-100/70">
                                 <ShieldAlert
@@ -2136,12 +2133,12 @@ export default function Home() {
                     </p>
                     <div className="mt-4 rounded-xl border border-[#a4ffcf]/15 bg-[#a4ffcf]/[.035] p-4">
                       <div className="flex flex-wrap items-start justify-between gap-3">
-                        <div><p className="text-[10px] tracking-[.12em] text-[#89f6bf]">MARKET REGIME</p><h3 className="mt-1 text-lg text-white">{marketSetup.marketRegime.label}</h3></div>
-                        <div className="flex flex-wrap gap-2"><RegimeBadge regime={marketSetup.marketRegime} /><span className="rounded-full bg-white/[.05] px-2.5 py-1 text-[10px] uppercase tracking-[.08em] text-[#a9bdb6]">{marketSetup.marketRegime.volatility} volatility</span></div>
+                        <div><p className="text-[10px] tracking-[.12em] text-[#89f6bf]">MARKET CONDITION</p><h3 className="mt-1 text-lg text-white">{marketSetup.marketRegime.label}</h3></div>
+                        <div className="flex flex-wrap gap-2"><RegimeBadge regime={marketSetup.marketRegime} /><span className="rounded-full bg-white/[.05] px-2.5 py-1 text-[10px] uppercase tracking-[.08em] text-[#a9bdb6]">{marketSetup.marketRegime.volatility === "high" ? "Large price swings" : marketSetup.marketRegime.volatility === "low" ? "Small price moves" : "Usual price movement"}</span></div>
                       </div>
                       <p className="mt-3 text-xs leading-5 text-[#c0d1ca]">{marketSetup.marketRegime.explanation}</p>
-                      <p className="mt-2 text-xs leading-5 text-[#89f6bf]"><span className="font-semibold">Trading implication:</span> {marketSetup.marketRegime.playbook}</p>
-                      <p className="mt-2 text-[10px] text-[#71887f]">Confidence {marketSetup.marketRegime.confidence}% · completed candles only · EMA separation · directional efficiency · range breaks · ATR expansion/contraction.</p>
+                      <p className="mt-2 text-xs leading-5 text-[#89f6bf]"><span className="font-semibold">What this means for you:</span> {marketSetup.marketRegime.playbook}</p>
+                      <p className="mt-2 text-[10px] text-[#71887f]">Rule match: {marketSetup.marketRegime.confidence}/100. This describes how closely price fits the pattern, not the chance of a profitable trade. Only finished price periods are used.</p>
                     </div>
                     <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
                       <PlanLevel
@@ -2191,7 +2188,7 @@ export default function Home() {
                           {([marketSetup.supportResistance.support, marketSetup.supportResistance.resistance] as Array<SupportResistanceZone | null>).map((zone, index) => (
                             <div key={zone ? `${zone.kind}-${zone.timeframe}-${zone.midpoint}` : `missing-${index}`} className="rounded-lg border border-white/[.07] bg-white/[.02] p-3">
                               <p className={(zone?.kind === "support" ? "text-sky-200" : "text-rose-200") + " text-[10px] font-semibold uppercase tracking-[.1em]"}>{zone?.kind ?? (index === 0 ? "support" : "resistance")}</p>
-                              {zone ? <><p className="mt-1 font-mono text-sm text-white">{formatScannerPrice(instrument, zone.low)}–{formatScannerPrice(instrument, zone.high)}</p><p className="mt-1 text-[10px] text-[#81978f]">{zone.timeframe} · strength {zone.strength}/100 · {zone.touches} swing touch{zone.touches === 1 ? "" : "es"} · {zone.distanceAtr.toFixed(1)} ATR away</p></> : <p className="mt-1 text-xs text-[#71887f]">No reliable nearby zone detected.</p>}
+                              {zone ? <><p className="mt-1 font-mono text-sm text-white">{formatScannerPrice(instrument, zone.low)}–{formatScannerPrice(instrument, zone.high)}</p><p className="mt-1 text-[10px] text-[#81978f]">{zone.timeframe} · strength {zone.strength}/100 · {zone.touches} swing touch{zone.touches === 1 ? "" : "es"} · {zone.distanceAtr.toFixed(1)} typical price moves away</p></> : <p className="mt-1 text-xs text-[#71887f]">No reliable nearby zone detected.</p>}
                             </div>
                           ))}
                         </div>
@@ -2479,7 +2476,7 @@ export default function Home() {
                               {marketAiPlan.eventRisk}
                             </p>
                             <p className="mt-2 text-xs leading-5 text-rose-200/75">
-                              Invalidation: {marketAiPlan.invalidation}
+                              The idea fails if: {marketAiPlan.invalidation}
                             </p>
                           </>
                         ) : (
@@ -2522,7 +2519,7 @@ export default function Home() {
                               </li>
                             </ol>
                             <p className="mt-3 text-xs leading-5 text-rose-200/75">
-                              Invalidation: {marketSetup.invalidation}
+                              The idea fails if: {marketSetup.invalidation}
                             </p>
                           </>
                         )}
@@ -2681,7 +2678,7 @@ function Bias({ bias }: { bias: "long" | "short" | "neutral" }) {
         " inline-flex rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[.1em]"
       }
     >
-      {bias}
+      {bias === "long" ? "Upward direction" : bias === "short" ? "Downward direction" : "No clear direction"}
     </span>
   );
 }

@@ -190,48 +190,47 @@ export function classifyMarketRegime(candlesInput: NormalisedCandle[]): MarketRe
   const breaksLow = last.close < Math.min(...prior.map((candle) => candle.low));
   const direction = ema20 > ema50 && last.close > ema20 ? "bullish" : ema20 < ema50 && last.close < ema20 ? "bearish" : "neutral";
   const volatility = volatilityRatio >= 1.25 ? "high" : volatilityRatio <= 0.8 ? "low" : "normal";
-  const percent = (value: number) => `${Math.round(value * 100)}%`;
 
   if ((breaksHigh || breaksLow) && volatilityRatio >= 0.95) {
     const breakoutDirection = breaksHigh ? "bullish" : "bearish";
     return {
       type: "breakout", direction: breakoutDirection, volatility,
-      label: `${breakoutDirection === "bullish" ? "Bullish" : "Bearish"} breakout`,
+      label: `${breakoutDirection === "bullish" ? "Moving above" : "Moving below"} its recent range`,
       confidence: Math.round(Math.min(95, 62 + efficiency * 24 + Math.max(0, volatilityRatio - 1) * 18)),
-      explanation: `Price closed beyond its prior 20-candle ${breaksHigh ? "high" : "low"}; directional efficiency is ${percent(efficiency)} and ATR is ${volatilityRatio.toFixed(2)}× its baseline.`,
-      playbook: "Wait for acceptance or a controlled retest. Do not chase the first expansion candle.",
+      explanation: `Price finished beyond its highest or lowest level of the previous 20 price periods. Recent moves are ${volatilityRatio.toFixed(2)} times their usual size.`,
+      playbook: "Wait to see whether price stays beyond the old boundary or returns to it and holds. The first fast move alone is not enough.",
     };
   }
   if (trendStrength >= 0.65 && efficiency >= 0.28 && direction !== "neutral") {
     return {
       type: "trending", direction, volatility,
-      label: `${direction === "bullish" ? "Bull" : "Bear"} trend`,
+      label: `${direction === "bullish" ? "Steadily rising" : "Steadily falling"}`,
       confidence: Math.round(Math.min(95, 55 + trendStrength * 18 + efficiency * 28)),
-      explanation: `The 20/50 EMA separation is ${trendStrength.toFixed(2)} ATR and price travelled with ${percent(efficiency)} directional efficiency.`,
-      playbook: "Prefer pullbacks and continuation entries with the trend. Avoid fading the move without a confirmed reversal.",
+      explanation: `Recent average prices and the latest price agree on an ${direction === "bullish" ? "upward" : "downward"} direction. The move has been relatively consistent.`,
+      playbook: "Look for a brief move against the direction, followed by signs that the main move is resuming. A reversal needs its own evidence.",
     };
   }
   if (volatilityRatio <= 0.78) {
     return {
-      type: "compression", direction: "neutral", volatility: "low", label: "Compression",
+      type: "compression", direction: "neutral", volatility: "low", label: "Small, quiet price moves",
       confidence: Math.round(Math.min(95, 58 + (0.78 - volatilityRatio) * 90)),
-      explanation: `ATR has contracted to ${volatilityRatio.toFixed(2)}× its recent baseline and price is not moving efficiently.`,
+      explanation: `Recent price moves are ${volatilityRatio.toFixed(2)} times their usual size. There is little progress in either direction.`,
       playbook: "Stand aside until price closes outside the range with confirmation; prepare both breakout directions.",
     };
   }
   if (volatilityRatio >= 1.3) {
     return {
-      type: "volatile", direction, volatility: "high", label: "Volatility spike",
+      type: "volatile", direction, volatility: "high", label: "Unusually large price swings",
       confidence: Math.round(Math.min(95, 60 + (volatilityRatio - 1.3) * 35 + (1 - efficiency) * 12)),
-      explanation: `ATR is ${volatilityRatio.toFixed(2)}× its baseline, but directional efficiency is only ${percent(efficiency)}.`,
-      playbook: "Use risk-based sizing, require stronger confirmation, and avoid entries in the middle of wide candles.",
+      explanation: `Recent price moves are ${volatilityRatio.toFixed(2)} times their usual size, with frequent changes in direction.`,
+      playbook: "Check how much the planned trade could lose, wait for clearer evidence and avoid rushing into a large price move.",
     };
   }
   return {
-    type: "ranging", direction: "neutral", volatility, label: "Range",
+    type: "ranging", direction: "neutral", volatility, label: "Moving sideways",
     confidence: Math.round(Math.min(90, 55 + (1 - efficiency) * 25 + Math.max(0, 0.65 - trendStrength) * 15)),
-    explanation: `Directional efficiency is ${percent(efficiency)} and EMA separation is only ${trendStrength.toFixed(2)} ATR, so neither side has sustained control.`,
-    playbook: "Trade only confirmed reactions at support or resistance. Avoid entries near the middle of the range.",
+    explanation: "Price keeps changing direction within a recent band. Neither buyers nor sellers have maintained control.",
+    playbook: "Wait for price to turn at a recent lower or upper boundary. The middle of the range gives less useful evidence.",
   };
 }
 
@@ -379,10 +378,10 @@ export function analyseInstrument(args: {
         : "mixed trend";
   const technicalStructure =
     price > ema20 && ema20 > ema50
-      ? "price is above the 20-EMA and the 20-EMA is above the 50-EMA"
+      ? "price is above its recent average, which is above its longer-term average"
       : price < ema20 && ema20 < ema50
-        ? "price is below the 20-EMA and the 20-EMA is below the 50-EMA"
-        : "price and the 20/50-EMA structure are not fully aligned";
+        ? "price is below its recent average, which is below its longer-term average"
+        : "price and its recent averages disagree about the direction";
   const momentumLabel =
     Math.abs(momentum) >= 0.8
       ? "moving strongly"
@@ -544,7 +543,7 @@ export function combineTimeframes(args: {
     const direction = frame.bias === "neutral" ? "mixed" : frame.bias;
     const movement = `${Math.abs(frame.change24h).toFixed(2)}% ${frame.change24h >= 0 ? "higher" : "lower"} over the last 24h`;
     const range = `${frame.rangePosition.toFixed(0)}% through its latest seven-candle range`;
-    return `${timeframe}: ${direction}; ${frame.technicalStructure}; RSI ${frame.rsi.toFixed(0)}, ${movement}, ${range}.`;
+    return `${timeframe}: ${direction}; ${frame.technicalStructure}; ${movement}; ${range}.`;
   };
   const triggerCandles = (args.candles[profile.trigger] ?? []).filter(
     (candle) => candle.complete,
@@ -600,7 +599,7 @@ export function combineTimeframes(args: {
   const strategies: StrategyEvidence[] = [
     {
       id: "trend-continuation",
-      name: "Multi-timeframe trend continuation",
+      name: "Following the broader price direction",
       status: trendStatus,
       evidence: directionConfirmed
         ? `${confirmations}/${alignment.length} timeframes are ${alignedBias}; the ${profile.context} chart sets the direction.`
@@ -612,31 +611,31 @@ export function combineTimeframes(args: {
     },
     {
       id: "liquidity-reclaim",
-      name: "Liquidity sweep and reclaim",
+      name: "Recovery after a failed breakout",
       status: sweepMatched && directionConfirmed ? "confirmed" : "waiting",
       evidence: sweepMatched
-        ? `The latest ${profile.trigger} candle swept the prior ${alignedBias === "long" ? "low" : "high"} and closed back inside the range.`
-        : `No confirmed ${alignedBias === "long" ? "low" : "high"} sweep-and-reclaim is visible on the ${profile.trigger} trigger candle.`,
+        ? `The latest ${profile.trigger} candle crossed the previous ${alignedBias === "long" ? "low" : "high"} and finished back inside the recent price band.`
+        : `No confirmed ${alignedBias === "long" ? "low" : "high"} failed breakout recovery is visible on the ${profile.trigger} trigger candle.`,
       why: "A failed push beyond a recent extreme can trap breakout traders. Reclaiming the level shows that the opposing side may have lost control.",
       nextStep: sweepMatched
-        ? "Wait for the reclaim candle to hold; enter only if price does not immediately break back through the swept level."
+        ? "Wait for the recovery to hold; enter only if price does not immediately break back through the previous boundary."
         : `For a ${alignedBias} idea, wait for price to take a nearby ${alignedBias === "long" ? "low" : "high"} and close back through it.`,
     },
     {
       id: "imbalance-continuation",
-      name: "Imbalance continuation",
+      name: "Following a strong price move",
       status: imbalanceMatched && directionConfirmed ? "confirmed" : "waiting",
       evidence: imbalanceMatched
-        ? `The latest three ${profile.trigger} candles left a ${alignedBias} imbalance: price moved quickly with little overlap.`
-        : `No fresh ${alignedBias === "long" ? "bullish" : "bearish"} three-candle imbalance is confirmed on the trigger chart.`,
+        ? `The latest three ${profile.trigger} candles left a ${alignedBias} gap between price periods after a fast move.`
+        : `No fresh ${alignedBias === "long" ? "bullish" : "bearish"} gap between three finished price periods is confirmed on the trigger chart.`,
       why: "A fast directional move can leave an area where little two-way trading happened. A retest that holds can offer a defined entry area; a close through it weakens the idea.",
       nextStep: imbalanceMatched
-        ? "Do not chase the move. Wait for a retest that holds the imbalance edge, then use the stop beyond the far side."
-        : "Treat an imbalance as a possible future entry zone, not as a trade until price reacts from it.",
+        ? "Do not chase the move. Wait for a retest that holds the edge of the gap, then use the stop beyond the far side."
+        : "Treat a price gap as a possible future entry area, not as a trade until price reacts from it.",
     },
     {
       id: "range-breakout",
-      name: "Range breakout continuation",
+      name: "Moving beyond a recent price range",
       status: breakoutMatched && directionConfirmed ? "confirmed" : "waiting",
       evidence: breakoutMatched
         ? `The latest ${profile.trigger} close broke the prior six-candle ${alignedBias === "long" ? "high" : "low"} in the same direction as the higher-timeframe bias.`
