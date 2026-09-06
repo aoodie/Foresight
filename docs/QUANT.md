@@ -43,3 +43,53 @@ holdout and doubled-cost stress tests. Reusing a dataset raises a holdout
 warning. These safeguards reduce overfitting risk; they cannot eliminate it.
 Promotion remains disabled pending prospective paper evidence. LuxAlgo
 historical features require explicit non-repainting verification.
+
+## Automatic condition-aware research
+
+The Quant Lab checks EUR/USD, GBP/USD and USD/JPY on hourly completed prices,
+using a rolling 90-day midpoint dataset and a fixed 2-basis-point round-trip
+cost estimate. Four `1.0.0-conditions-v1` hypotheses restrict entry eligibility
+to explicit market conditions. The same restriction runs inside `decide` for
+both replay and the latest observation. Original 1.0.0 definitions are unchanged.
+
+Three consecutive completed hourly periods must agree on conditions. Stale
+prices block recommendations. Candidate ranking uses earlier forward windows;
+the reserved final period is used only for acceptance checks. A recommendation
+also requires at least 30 reserved-period trades in the current condition.
+No ranking on held-out results, automatic live promotion or order submission
+occurs. News-driven adaptation requires a future verified news feed; price-only
+classification cannot establish the cause of a move.
+
+Every market has a persisted hourly due time and a five-minute exclusive lease.
+Failed checks retry after 15 minutes. A lease token prevents an expired runner
+from overwriting its replacement. Completed summaries are appended to
+`quant_automatic_history`. Overlapping hourly samples are explicitly labelled
+as repeated monitoring, not independent evidence. Automatic research uses no
+LLM requests and does not increase model usage.
+
+The browser heartbeat requests due work while the website is open; authenticated
+autotrader heartbeat events also request due work through `waitUntil`. These are
+triggers, not a cloud cron service. With neither driver active, checks resume on
+the next trigger. An optional Codex recurring task can open the lab and request
+due checks while Codex's local scheduler is available. The UI exposes enable,
+pause, check-now, running, last-completed and failure states.
+
+## Model output compatibility
+
+| Connection mode | Provider request | Local handling |
+| --- | --- | --- |
+| `responses` | Responses API structured schema | Contract validation |
+| `chat_completions` | Chat Completions strict schema | Contract validation |
+| `chat_json` | Chat Completions `json_object`, `max_tokens` | Contract validation |
+| `chat_text` | Chat Completions without `response_format` | Parse JSON/fenced JSON, then contract validation |
+| `anthropic` | Native Messages, JSON contract in prompt | Parse JSON/fenced JSON, then contract validation |
+
+The strategy and review contracts validate required fields, choices, types,
+number bounds and array lengths regardless of provider. Prose surrounding a
+decision, invalid data and truncated JSON are rejected rather than guessed.
+Normal conversation remains free text. Save a role in Connections and use
+“Test saved model connection” to make one small provider request. Background
+trader deployments use `LLM_PROTOCOL` with the same mode names.
+
+Provider references: [DeepSeek JSON mode](https://api-docs.deepseek.com/guides/json_mode/)
+and [Gemini compatible API](https://ai.google.dev/gemini-api/docs/openai).

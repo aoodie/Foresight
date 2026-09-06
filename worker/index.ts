@@ -28,6 +28,16 @@ interface ExecutionContext {
 const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+    // Existing authenticated worker heartbeats also drive due research when the
+    // website is closed. The route validates the worker secret before success.
+    if(url.pathname === '/api/autotrader/events' && request.method === 'POST') {
+      const body=await request.clone().json().catch(()=>null) as {type?:string;payload?:{event?:string}}|null;
+      const response=await handler.fetch(request,env,ctx);
+      if(response.ok&&body?.type==='log'&&body.payload?.event==='worker.heartbeat') {
+        ctx.waitUntil(import('../lib/quant/automatic').then(m=>m.runAutomaticResearch()).then(()=>undefined).catch(()=>undefined));
+      }
+      return response;
+    }
 
     if (url.pathname === "/_vinext/image") {
       const allowedWidths = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES];

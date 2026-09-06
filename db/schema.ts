@@ -143,3 +143,15 @@ export const modelProfiles = sqliteTable("model_profiles", {
   model: text("model").notNull(),
   updatedAt: text("updated_at").notNull(),
 });
+export const quantAutomationSettings = sqliteTable('quant_automation_settings', {
+ id:text('id').primaryKey(),enabled:integer('enabled').notNull(),
+});
+export const quantAutomationJobs = sqliteTable('quant_automation_jobs', {
+ instrument:text('instrument').primaryKey(),nextDueAt:integer('next_due_at').notNull(),
+ leaseUntil:integer('lease_until').notNull(),leaseToken:text('lease_token'),
+ completedAt:text('completed_at'),resultJson:text('result_json'),lastError:text('last_error'),
+});
+export const quantAutomaticHistory = sqliteTable('quant_automatic_history', {
+ id:text('id').primaryKey(),instrument:text('instrument').notNull(),
+ createdAt:text('created_at').notNull(),resultJson:text('result_json').notNull(),
+});

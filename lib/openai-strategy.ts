@@ -1,4 +1,5 @@
 import { llmFetch, type LlmProtocol } from "./llm-provider.ts";
+import { parseStructuredOutput } from "./structured-output.ts";
 export type StrategyMarket = {
   instrument: string;
   label: string;
@@ -121,7 +122,7 @@ export async function generateStrategies(apiKey: string, model: string, markets:
   if (!response.ok) throw new Error(payload.error?.message || "The LLM provider could not generate the daily strategies.");
   const text = payload.output?.flatMap((item) => item.content ?? []).find((item) => item.type === "output_text")?.text;
   if (!text) throw new Error("The LLM provider returned no structured strategy output.");
-  const parsed = JSON.parse(text) as { strategies?: AiStrategy[] };
+  const parsed = parseStructuredOutput(text, outputSchema) as { strategies?: AiStrategy[] };
   if (!Array.isArray(parsed.strategies)) throw new Error("The LLM provider returned an invalid strategy payload.");
   return { value: parsed.strategies, responseId: typeof (payload as { id?: unknown }).id === "string" ? (payload as { id: string }).id : null, usage: payload && typeof (payload as { usage?: unknown }).usage === "object" ? (payload as { usage: Record<string, unknown> }).usage : null, input, instructions: strategyInstructions };
 }
@@ -164,6 +165,6 @@ export async function reviewLiveTrade(apiKey: string, model: string, input: unkn
   if (!response.ok) throw new Error(payload.error?.message || "The LLM provider could not review the live trade.");
   const text = payload.output?.flatMap((item) => item.content ?? []).find((item) => item.type === "output_text")?.text;
   if (!text) throw new Error("The LLM provider returned no trade review.");
-  return { value: JSON.parse(text) as LiveTradeReview, responseId: typeof (payload as { id?: unknown }).id === "string" ? (payload as { id: string }).id : null, usage: payload && typeof (payload as { usage?: unknown }).usage === "object" ? (payload as { usage: Record<string, unknown> }).usage : null, input, instructions: reviewInstructions };
+  return { value: parseStructuredOutput(text, reviewSchema) as LiveTradeReview, responseId: typeof (payload as { id?: unknown }).id === "string" ? (payload as { id: string }).id : null, usage: payload && typeof (payload as { usage?: unknown }).usage === "object" ? (payload as { usage: Record<string, unknown> }).usage : null, input, instructions: reviewInstructions };
 }
 import { aiEndpoint, defaultAiBaseUrl } from "./ai-config.ts";

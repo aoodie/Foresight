@@ -10,6 +10,7 @@ const { decide } = await vite.ssrLoadModule('/lib/quant/engine.ts');
 const { strategies } = await vite.ssrLoadModule('/lib/quant/registry.ts');
 const { replay } = await vite.ssrLoadModule('/lib/quant/replay.ts');
 const { observeLiveStrategies } = await vite.ssrLoadModule('/lib/quant/live.ts');
+const {senseConditions,adaptiveStrategies}=await vite.ssrLoadModule('/lib/quant/adaptive.ts');
 const bars = Array.from({length:220},(_,i)=> { const open=100+i*.02+Math.sin(i/3); const close=open+Math.cos(i)*.4; return {openTime:i*3600000,closeTime:(i+1)*3600000,availableAt:(i+1)*3600000,open,close,high:Math.max(open,close)+.1,low:Math.min(open,close)-.1,complete:true}; });
 test('live research observations equal replay decisions and ignore unfinished candles',()=> {
  const candles=bars.map(b=>({...b,time:new Date(b.openTime).toISOString()}));
@@ -17,12 +18,18 @@ test('live research observations equal replay decisions and ignore unfinished ca
  for (const [index,strategy] of strategies.entries()) assert.deepEqual(observed[index],replay({instrument:'EUR_USD',timeframe:'H1',bars,strategy,costBps:2}).decisions.at(-1));
 });
 test('every strategy is prefix consistent and does not access future bars',()=> {
- for (const s of strategies) for (const length of [60,100,150]) {
+ for (const s of [...strategies,...adaptiveStrategies]) for (const length of [60,100,150]) {
   const short=marketContext({instrument:'EUR_USD',timeframe:'H1',bars:bars.slice(0,length),asOf:bars[length-1].closeTime});
   const full=marketContext({instrument:'EUR_USD',timeframe:'H1',bars,asOf:bars[length-1].closeTime});
   assert.deepEqual(decide(short,s),decide(full,s));
   assert.deepEqual(replay({instrument:'EUR_USD',timeframe:'H1',bars:bars.slice(0,length),strategy:s,costBps:2}).decisions,replay({instrument:'EUR_USD',timeframe:'H1',bars,strategy:s,costBps:2}).decisions.slice(0,length));
  }
+});
+test('adaptive conditions ignore future bars and refuse stale snapshots',()=>{
+ const now=bars[99].closeTime;
+ assert.deepEqual(senseConditions('EUR_USD','H1',bars,now),senseConditions('EUR_USD','H1',bars.slice(0,100),now));
+ assert.equal(senseConditions('EUR_USD','H1',bars,bars.at(-1).closeTime+3*3600000).fresh,false);
+ for(const strategy of adaptiveStrategies){const c=marketContext({instrument:'EUR_USD',timeframe:'H1',bars,asOf:bars.at(-1).closeTime});const d=decide(c,strategy);if(!strategy.activeRegimes.includes(d.regime))assert.equal(d.action,'wait');}
 });
 test('higher bars and delayed observations are visible only when complete and available',()=> {
  const higher=[{...bars[0],closeTime:4*3600000,availableAt:4*3600000}];

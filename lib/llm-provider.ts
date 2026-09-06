@@ -1,8 +1,8 @@
 import { aiEndpoint } from './ai-config.ts';
-export type LlmProtocol = 'responses' | 'chat_completions' | 'anthropic';
+export type LlmProtocol = 'responses' | 'chat_completions' | 'chat_json' | 'chat_text' | 'anthropic';
 export const modelRoles = ['fast','reasoning','research','critic','chat'] as const;
 export type ModelRole = typeof modelRoles[number];
-export function isLlmProtocol(value: unknown): value is LlmProtocol { return value === 'responses' || value === 'chat_completions' || value === 'anthropic'; }
+export function isLlmProtocol(value: unknown): value is LlmProtocol { return typeof value === 'string' && ['responses','chat_completions','chat_json','chat_text','anthropic'].includes(value); }
 // Normalise transport only. Callers still validate their own structured results.
 export async function llmFetch(url: string, init: RequestInit, protocol: LlmProtocol = 'responses'): Promise<Response> {
  const original = JSON.parse(String(init.body)) as { model?:string; instructions?:string; input?:string; max_output_tokens?:number; text?:{format?:{type:string;name:string;strict?:boolean;schema:unknown}} };
@@ -11,9 +11,11 @@ export async function llmFetch(url: string, init: RequestInit, protocol: LlmProt
  let target = url; let body:unknown = original;
  const headers = new Headers(init.headers);
  const format=original.text?.format;
- if (protocol === 'chat_completions') {
+ if (protocol === 'chat_completions' || protocol === 'chat_json' || protocol === 'chat_text') {
   target=aiEndpoint(base,'/chat/completions');
-  body={model:original.model,messages:[{role:'system',content:original.instructions??''},{role:'user',content:original.input??''}],max_completion_tokens:original.max_output_tokens??4096,...(format?{response_format:{type:'json_schema',json_schema:{name:format.name,strict:format.strict??true,schema:format.schema}}}:{})};
+  const instructions = (original.instructions ?? '') + (format && protocol !== 'chat_completions' ? `\nReturn only JSON matching this contract: ${JSON.stringify(format.schema)}` : '');
+  const outputFormat = !format || protocol === 'chat_text' ? {} : protocol === 'chat_json' ? {response_format:{type:'json_object'}} : {response_format:{type:'json_schema',json_schema:{name:format.name,strict:format.strict??true,schema:format.schema}}};
+  body={model:original.model,messages:[{role:'system',content:instructions},{role:'user',content:original.input??''}],...(protocol === 'chat_completions' ? {max_completion_tokens:original.max_output_tokens??4096} : {max_tokens:original.max_output_tokens??4096}),...outputFormat};
  }
  if(protocol==='anthropic') {
   target=aiEndpoint(base,'/messages');const key=headers.get('Authorization')?.replace(/^Bearer\s+/i,'');headers.delete('Authorization');headers.set('x-api-key',key??'');headers.set('anthropic-version','2023-06-01');

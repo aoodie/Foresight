@@ -17,6 +17,7 @@ import { getEconomicEventStatus } from "../lib/economic-calendar.ts";
 import { analyseInstrument, candleCountForGranularity, combineTimeframes, timeframeProfiles, type ScannerResult, type TimeframeMode } from "../lib/market-scanner.ts";
 import { reviewLiveTrade, type LiveTradeReview } from "../lib/openai-strategy.ts";
 import { defaultAiBaseUrl, normalizeAiBaseUrl } from "../lib/ai-config.ts";
+import { isLlmProtocol, type LlmProtocol } from '../lib/llm-provider.ts';
 import { calculateRiskSizedUnits, hasTriggerConfirmation, pipSize, positionRiskAmount, positionSizeLockPeriod, resolveLockedPositionSize, standardLots, validateProtectedOrder, type SizeLockScope } from "../lib/trade-risk.ts";
 import { WorkerState, type WorkerEvent, type WorkerJournalRow } from "./state.ts";
 import { canAutoCloseReviewedTrade, tradeReviewSource, type TradeReviewSource } from "../lib/trade-monitoring.ts";
@@ -43,6 +44,7 @@ type Config = {
   llmApiKey?: string;
   llmModel: string;
   llmBaseUrl: string;
+  llmProtocol: LlmProtocol;
   llmReviewMs: number;
   llmMoveAtrFraction: number;
   heartbeatMs: number;
@@ -103,6 +105,7 @@ function loadConfig(): Config {
     llmApiKey: process.env.LLM_API_KEY?.trim() || process.env.OPENAI_API_KEY?.trim() || undefined,
     llmModel: process.env.LLM_MODEL?.trim() || "",
     llmBaseUrl: normalizeAiBaseUrl(process.env.LLM_BASE_URL?.trim() || defaultAiBaseUrl),
+    llmProtocol: (()=>{const value=process.env.LLM_PROTOCOL?.trim()||'responses';if(!isLlmProtocol(value))throw new Error('Unsupported LLM_PROTOCOL.');return value;})(),
     llmReviewMs: Math.max(300000, numberEnv("LLM_REVIEW_MS", 900000)),
     llmMoveAtrFraction: Math.max(0.1, numberEnv("LLM_MOVE_ATR_FRACTION", 0.25)),
     heartbeatMs: Math.max(30000, numberEnv("AUTOTRADER_HEARTBEAT_MS", 60000)),
@@ -325,7 +328,7 @@ class AutoTrader {
     const input = { reviewReason: eventContext ? "high_impact_news_released" : "material_trade_change", tradeSource: source, style: this.config.mode, trade: { id: trade.id, instrument: trade.instrument, units: trade.units, price: trade.price, stopLoss: trade.stopLoss, takeProfit: trade.takeProfit }, currentPrice, technicalSnapshot, eventContext };
     const cacheKey = await hashInput({ model: this.config.llmModel, baseUrl: this.config.llmBaseUrl, input: { ...input, currentPriceBucket: priceBucket(currentPrice, result?.atrPercent ?? 0.2) } });
     const cached = this.store.cacheGet<LiveTradeReview>(cacheKey);
-    const review = cached?.value ?? (await reviewLiveTrade(this.config.llmApiKey, this.config.llmModel, input, this.config.llmBaseUrl)).value;
+    const review = cached?.value ?? (await reviewLiveTrade(this.config.llmApiKey, this.config.llmModel, input, this.config.llmBaseUrl,this.config.llmProtocol)).value;
     if (!cached) this.store.cacheSet(cacheKey, this.config.llmModel, review, 15 * 60 * 1000);
     this.store.set(`review:${trade.id}`, { at: Date.now(), price: currentPrice, atr });
     const managed = this.store.managedOpenTrades().find((row) => row.broker_trade_id === trade.id);

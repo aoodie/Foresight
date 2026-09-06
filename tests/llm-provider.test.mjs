@@ -1,6 +1,16 @@
 import test,{after}from'node:test';import assert from'node:assert/strict';import{createServer}from'vite';import{fileURLToPath}from'node:url';
 const root=fileURLToPath(new URL('..',import.meta.url));const vite=await createServer({appType:'custom',configFile:false,root,server:{middlewareMode:true,hmr:false}});after(()=>vite.close());
 const{llmFetch}=await vite.ssrLoadModule('/lib/llm-provider.ts');
+const{parseStructuredOutput}=await vite.ssrLoadModule('/lib/structured-output.ts');
 const request={method:'POST',headers:{Authorization:'Bearer test-key'},body:JSON.stringify({model:'user-selected-model',instructions:'Explain only',input:'EUR_USD',text:{format:{name:'test',schema:{type:'object'}}}})};
 test('maps a compatible chat provider without changing the selected model',async t=>{t.mock.method(globalThis,'fetch',async(url,init)=>{assert.equal(url,'https://example.com/v1/chat/completions');const body=JSON.parse(init.body);assert.equal(body.model,'user-selected-model');assert.equal(body.messages[0].content,'Explain only');assert.equal(body.response_format.type,'json_schema');return Response.json({choices:[{message:{content:'{"ok":true}'}}]});});const result=await(await llmFetch('https://example.com/v1/responses',request,'chat_completions')).json();assert.equal(result.output[0].content[0].text,'{"ok":true}');});
 test('uses native Anthropic headers and rejects truncated output',async t=>{t.mock.method(globalThis,'fetch',async(url,init)=>{assert.equal(url,'https://example.com/v1/messages');assert.equal(init.headers.get('x-api-key'),'test-key');assert.equal(init.headers.has('Authorization'),false);return Response.json({stop_reason:'max_tokens',content:[]});});await assert.rejects(llmFetch('https://example.com/v1/responses',request,'anthropic'),/truncated/);});
+for(const mode of ['chat_json','chat_text'])test(`${mode} works without OpenAI strict schemas`,async t=>{
+ t.mock.method(globalThis,'fetch',async(url,init)=>{const body=JSON.parse(init.body);assert.equal(body.max_tokens,4096);assert.equal(body.max_completion_tokens,undefined);assert.match(body.messages[0].content,/Return only JSON/);assert.deepEqual(body.response_format,mode==='chat_json'?{type:'json_object'}:undefined);return Response.json({choices:[{message:{content:'```json\n{"status":"ok"}\n```'},finish_reason:'stop'}]});});
+ const result=await(await llmFetch('https://example.com/v1/responses',request,mode)).json();assert.deepEqual(parseStructuredOutput(result.output[0].content[0].text,{type:'object',required:['status'],properties:{status:{type:'string',enum:['ok']}},additionalProperties:false}),{status:'ok'});
+});
+test('all providers must meet the local decision contract',()=>{
+ const schema={type:'object',required:['decision','confidence'],additionalProperties:false,properties:{decision:{type:'string',enum:['hold','close']},confidence:{type:'number',minimum:0,maximum:100}}};
+ for(const output of ['{"decision":"close"}','{"decision":"buy","confidence":50}','{"decision":"close","confidence":"90"}','{"decision":"hold","confidence":101}','Here is the answer: {"decision":"hold","confidence":50}'])assert.throws(()=>parseStructuredOutput(output,schema));
+ assert.deepEqual(parseStructuredOutput('{"decision":"hold","confidence":50}',schema),{decision:'hold',confidence:50});
+});

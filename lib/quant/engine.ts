@@ -22,6 +22,7 @@ export function decide(context: MarketContext, strategy: Strategy): Decision {
   const result: Decision = { strategyId: strategy.id, strategyVersion: strategy.version, strategyInstance: strategyInstance(strategy), instrument: context.instrument, timeframe: context.timeframe, asOf: context.asOf, regime, action: "wait", entry: null, stop: null, target: null, score: 0, explanation: "There is not enough completed price history to make a decision.", invalidation: strategy.invalidation, features: f, externalEvidence: context.external };
   if (!strategy.timeframes.includes(context.timeframe) || !strategy.markets.includes(context.instrument)) return { ...result, explanation: "This strategy has not been configured for this market and timeframe." };
   if (c.length < Math.max(55, strategy.parameters.lookback + 2) || !f.atr) return result;
+  if (strategy.activeRegimes && !strategy.activeRegimes.includes(regime)) return { ...result, explanation: 'This version waits because the current market condition is outside the conditions it is testing.' };
   if (context.asOf - c.at(-1)!.closeTime > 1) return { ...result, explanation: "Wait for a fresh completed candle. This snapshot is stale." };
   if (strategy.avoidRegimes.includes(regime) || context.newsRisk) return { ...result, explanation: "Current conditions do not suit this strategy. Waiting avoids a forced entry." };
   const last = c.at(-1)!; const previous = c.at(-2)!;

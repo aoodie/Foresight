@@ -37,3 +37,18 @@ test('the entry context remains unchanged by later reviews',async()=>{
  await updateJournalEntry({id:'snapshot',status:'closed',metadata:{strategyVersion:'fake',marketRegime:{type:'range'}}});
  assert.equal(sqlite.prepare('SELECT context_json FROM trade_entry_context WHERE journal_id = ?').get('snapshot').context_json,before);
 });
+test('automatic research leases prevent duplicates, recover, and reject stale completions',async()=>{
+ const {claimResearch,finishResearch,setAutomaticEnabled}=await vite.ssrLoadModule('/lib/quant/automatic.ts');
+ const now=1000000;
+ const first=await claimResearch(now);assert.ok(first);
+ const second=await claimResearch(now),third=await claimResearch(now);
+ assert.equal(new Set([first.instrument,second.instrument,third.instrument]).size,3);
+ assert.equal(await claimResearch(now),null);
+ const recovered=await claimResearch(now+300001);assert.equal(recovered.instrument,first.instrument);
+ await finishResearch(first,{stale:true},null,now+300002);
+ assert.equal(sqlite.prepare('SELECT result_json FROM quant_automation_jobs WHERE instrument=?').get(first.instrument).result_json,null);
+ await finishResearch(recovered,{fresh:true},null,now+300003);
+ assert.deepEqual(JSON.parse(sqlite.prepare('SELECT result_json FROM quant_automation_jobs WHERE instrument=?').get(first.instrument).result_json),{fresh:true});
+ assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM quant_automatic_history').get().count,1);
+ await setAutomaticEnabled(false);assert.equal(await claimResearch(now+7200000),null);
+});
