@@ -3,7 +3,7 @@ import { getOandaToken } from '../oanda-secret.ts';
 import { historicalData } from './history.ts';
 import { oandaHistory } from './oanda-history.ts';
 import { historyCache } from './store.ts';
-import { adaptiveResearch } from './adaptive.ts';
+import { discoverStrategies,discoveryObservation,type Discovery } from './discovery.ts';
 const db=(env as unknown as {DB:D1Database}).DB;
 const instruments=['EUR_USD','GBP_USD','USD_JPY'];
 async function initialise() {
@@ -24,7 +24,9 @@ export async function claimResearch(now=Date.now()) {
  const enabled=await db.prepare("SELECT enabled FROM quant_automation_settings WHERE id='primary'").first<{enabled:number}>();
  if(!enabled?.enabled)return null;
  const token=crypto.randomUUID();
- const row=await db.prepare('UPDATE quant_automation_jobs SET lease_until=?,lease_token=? WHERE instrument=(SELECT instrument FROM quant_automation_jobs WHERE next_due_at<=? AND lease_until<=? ORDER BY next_due_at,instrument LIMIT 1) AND lease_until<=? RETURNING instrument').bind(now+300000,token,now,now,now).first<{instrument:string}>();
+ // Upgrade a successful legacy four-strategy result immediately; failures keep
+ // their retry delay. New discovery results use the ordinary hourly schedule.
+ const row=await db.prepare("UPDATE quant_automation_jobs SET lease_until=?,lease_token=? WHERE instrument=(SELECT instrument FROM quant_automation_jobs WHERE (next_due_at<=? OR (result_json IS NOT NULL AND json_extract(result_json,'$.discovery') IS NULL AND last_error IS NULL)) AND lease_until<=? ORDER BY next_due_at,instrument LIMIT 1) AND lease_until<=? RETURNING instrument").bind(now+300000,token,now,now,now).first<{instrument:string}>();
  return row?{instrument:row.instrument,token}:null;
 }
 export async function finishResearch(claim:{instrument:string;token:string},result:unknown,error:string|null,now=Date.now()) {
@@ -38,7 +40,13 @@ export async function runAutomaticResearch() {
   const connection=await getOandaToken();if(!connection)throw new Error('Connect OANDA to start automatic research.');
   const now=Date.now(),to=Math.floor(now/3600000)*3600000;
   const bars=await historicalData(oandaHistory(connection.token,connection.environment),historyCache,{instrument:claim.instrument,timeframe:'H1',from:to-90*86400000,to});
-  const result=adaptiveResearch(claim.instrument,bars,now);
+  const prior=await db.prepare('SELECT result_json FROM quant_automation_jobs WHERE instrument=?').bind(claim.instrument).first<{result_json:string|null}>();
+  const previous=prior?.result_json?JSON.parse(prior.result_json) as {discovery?:Discovery;discoveredAt?:number}:null;
+  // Reassess conditions hourly, but search at most once per day and only when
+  // there are new completed prices. All candidate definitions remain recorded.
+  const reuse=previous?.discovery&&(now-(previous.discoveredAt??0)<86400000||bars.at(-1)!.closeTime<=previous.discovery.to);
+  const discovery=reuse?previous!.discovery!:discoverStrategies(claim.instrument,bars);
+  const result={...discoveryObservation(discovery,bars,now),discoveredAt:reuse?previous!.discoveredAt:now};
   await finishResearch(claim,result,null);return {message:`Updated ${claim.instrument.replace('_',' / ')} research.`};
  }catch(e){const message=e instanceof Error?e.message:'Automatic research failed.';await finishResearch(claim,null,message);return {message,error:true};}
 }

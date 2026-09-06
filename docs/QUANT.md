@@ -48,8 +48,9 @@ historical features require explicit non-repainting verification.
 
 The Quant Lab checks EUR/USD, GBP/USD and USD/JPY on hourly completed prices,
 using a rolling 90-day midpoint dataset and a fixed 2-basis-point round-trip
-cost estimate. Four `1.0.0-conditions-v1` hypotheses restrict entry eligibility
-to explicit market conditions. The same restriction runs inside `decide` for
+cost estimate. The initial four `1.0.0-conditions-v1` hypotheses restrict entry eligibility
+to explicit market conditions. Automatic research now uses the discovery search
+described below. The same restriction runs inside `decide` for
 both replay and the latest observation. Original 1.0.0 definitions are unchanged.
 
 Three consecutive completed hourly periods must agree on conditions. Stale
@@ -93,3 +94,26 @@ trader deployments use `LLM_PROTOCOL` with the same mode names.
 
 Provider references: [DeepSeek JSON mode](https://api-docs.deepseek.com/guides/json_mode/)
 and [Gemini compatible API](https://ai.google.dev/gemini-api/docs/openai).
+
+## Automatic strategy discovery
+
+`discovery.ts` generates 24 immutable rule combinations from six entry concepts,
+confirmation filters, four lookbacks and bounded stop/target/holding settings.
+The rule vocabulary uses only completed price observations. It executes through
+the same `decide` function as replay, without evaluating generated code.
+Each generated version and its complete rules are retained in the report.
+
+The first 80% of history, minus a 50-period gap, is the development region.
+Candidates need enough trades and positive results in both chronological halves
+of that region. One finalist per condition is selected there, before looking at
+the reserved final 20%. Final checks include 30 trades in that condition, positive
+net results, doubled costs and a bounded decline. These are screening gates,
+not statistical proof. The 24 trials and up to five finalists still create
+selection bias; prospective paper evidence is required before live eligibility.
+
+The search runs at most daily when new completed prices exist. Hourly monitoring
+reuses the discoveries and changes its recommendation according to the latest
+stable condition. No new prices means no repeated search. The report includes
+all rejected candidates and can be downloaded from each market's discovery panel.
+This is bounded rule discovery; it does not invent arbitrary indicators, expand
+its search budget automatically, or change live trading rules.

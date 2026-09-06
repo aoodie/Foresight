@@ -1,4 +1,5 @@
 import { type MarketContext, type Decision, type Strategy, type Regime } from "./types.ts";
+import { evaluateRules,ruleValues } from './rules.ts';
 export function features(context: MarketContext) {
   const c = context.bars; const recent = c.slice(-21);
   if (recent.length < 21) return { atr: 0, efficiency: 0, direction: 0, compression: false, expansion: false };
@@ -16,7 +17,7 @@ export function regimeFor(context: MarketContext): Regime {
   if (f.compression) return "compression";
   return f.efficiency > 0.55 ? "strong_trend" : f.efficiency > 0.25 ? "weak_trend" : "range";
 }
-export function strategyInstance(s: Strategy) { return `${s.id}@${s.version}:${JSON.stringify(s.parameters)}`; }
+export function strategyInstance(s: Strategy) { return `${s.id}@${s.version}:${JSON.stringify(s.parameters)}${s.ruleSet?':'+JSON.stringify({rules:s.ruleSet,conditions:s.activeRegimes}):''}`; }
 export function decide(context: MarketContext, strategy: Strategy): Decision {
   const f = features(context); const regime = regimeFor(context); const c = context.bars;
   const result: Decision = { strategyId: strategy.id, strategyVersion: strategy.version, strategyInstance: strategyInstance(strategy), instrument: context.instrument, timeframe: context.timeframe, asOf: context.asOf, regime, action: "wait", entry: null, stop: null, target: null, score: 0, explanation: "There is not enough completed price history to make a decision.", invalidation: strategy.invalidation, features: f, externalEvidence: context.external };
@@ -30,6 +31,7 @@ export function decide(context: MarketContext, strategy: Strategy): Decision {
   const high = Math.max(...window.map((b) => b.high)); const low = Math.min(...window.map((b) => b.low));
   const mean = window.reduce((sum, b) => sum + b.close, 0) / window.length;
   let direction = 0;
+  if(strategy.id==='discovered-rules'&&strategy.ruleSet)direction=evaluateRules(strategy.ruleSet,ruleValues(context,strategy.parameters.lookback,f.atr));
   if (strategy.id === "trend-pullback") direction = f.efficiency > 0.25 && f.direction > 0 && last.low <= mean && last.close > mean ? 1 : f.efficiency > 0.25 && f.direction < 0 && last.high >= mean && last.close < mean ? -1 : 0;
   if (strategy.id === "range-breakout") direction = last.close > high ? 1 : last.close < low ? -1 : 0;
   if (strategy.id === "liquidity-reclaim") direction = last.low < low && last.close > low && last.close > last.open ? 1 : last.high > high && last.close < high && last.close < last.open ? -1 : 0;
