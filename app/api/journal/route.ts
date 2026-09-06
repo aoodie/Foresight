@@ -8,6 +8,11 @@ import { env } from "cloudflare:workers";
 
 async function ownerRequest() { return Boolean((await headers()).get("oai-authenticated-user-email")); }
 const runtime = env as unknown as { DB: D1Database };
+const JOURNAL_INSTRUMENTS = new Set(["EUR_USD", "GBP_USD", "USD_JPY", "USD_CHF", "AUD_USD", "NZD_USD", "USD_CAD", "EUR_GBP", "EUR_JPY", "GBP_JPY"]);
+const DIRECTIONS = new Set(["long", "short"]);
+const STYLES = new Set(["intraday", "swing", "scalp", "position"]);
+const finite = (value: unknown) => typeof value === "number" && Number.isFinite(value);
+const boundedText = (value: unknown, max: number) => typeof value === "string" && value.length <= max ? value : null;
 
 export async function GET(request: Request) {
   if (!(await ownerRequest())) return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
@@ -40,6 +45,12 @@ export async function POST(request: Request) {
   if (!(await ownerRequest())) return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
   const body = await request.json().catch(() => null) as Record<string, unknown> | null;
   if (!body || typeof body.instrument !== "string" || typeof body.direction !== "string" || typeof body.style !== "string") return NextResponse.json({ error: "Instrument, direction and trading style are required." }, { status: 400 });
+  if (!JOURNAL_INSTRUMENTS.has(body.instrument) || !DIRECTIONS.has(body.direction) || !STYLES.has(body.style)) return NextResponse.json({ error: "Use a supported market, direction and trading style." }, { status: 400 });
+  const numericFields = ["entryPrice", "stopLoss", "takeProfit1", "takeProfit2", "units", "lots", "riskPercent", "riskAmount", "pnl"];
+  if (numericFields.some((field) => body[field] !== undefined && body[field] !== null && !finite(body[field]))) return NextResponse.json({ error: "Prices, size and risk values must be finite numbers." }, { status: 400 });
+  if (typeof body.metadata === "object" && body.metadata !== null && JSON.stringify(body.metadata).length > 12000) return NextResponse.json({ error: "Journal metadata is too large." }, { status: 413 });
+  const textFields = ["strategyName", "setupType", "thesis", "evidence", "invalidation", "notes"];
+  if (textFields.some((field) => body[field] !== undefined && body[field] !== null && boundedText(body[field], 8000) === null)) return NextResponse.json({ error: "Journal text fields must be under 8,000 characters." }, { status: 400 });
   try {
     const id = await createJournalEntry({
       environment: body.environment === "live" || body.environment === "practice" ? body.environment : (await getOandaToken())?.environment ?? "practice",

@@ -5,6 +5,7 @@ import { oandaHistory } from './oanda-history.ts';
 import { historyCache } from './store.ts';
 import { discoverStrategies,discoveryObservation,type Discovery } from './discovery.ts';
 const db=(env as unknown as {DB:D1Database}).DB;
+function parseJson<T>(value:string|null|undefined):T|null { if(!value) return null; try { return JSON.parse(value) as T; } catch { return null; } }
 const instruments=['EUR_USD','GBP_USD','USD_JPY'];
 async function initialise() {
  await db.prepare("INSERT OR IGNORE INTO quant_automation_settings (id,enabled) VALUES ('primary',1)").run();
@@ -14,7 +15,7 @@ export async function automaticStatus() {
  await initialise();
  const config=await db.prepare("SELECT enabled FROM quant_automation_settings WHERE id='primary'").first<{enabled:number}>();
  const rows=await db.prepare('SELECT * FROM quant_automation_jobs ORDER BY instrument').all<{instrument:string;next_due_at:number;lease_until:number;completed_at:string|null;result_json:string|null;last_error:string|null}>();
- return {enabled:Boolean(config?.enabled),intervalMinutes:60,driver:'Checks run while Foresight is open or when the connected background worker sends a heartbeat. A scheduled Codex task can also trigger checks while the app is running.',jobs:rows.results.map(r=>({instrument:r.instrument,nextDueAt:r.next_due_at,running:r.lease_until>Date.now(),completedAt:r.completed_at,error:r.last_error,result:r.result_json?JSON.parse(r.result_json):null}))};
+ return {enabled:Boolean(config?.enabled),intervalMinutes:60,driver:'Checks run while Foresight is open or when the connected background worker sends a heartbeat. A scheduled Codex task can also trigger checks while the app is running.',jobs:rows.results.map(r=>({instrument:r.instrument,nextDueAt:r.next_due_at,running:r.lease_until>Date.now(),completedAt:r.completed_at,error:r.last_error,result:parseJson<Record<string,any>>(r.result_json)}))};
 }
 export async function setAutomaticEnabled(enabled:boolean) {
  await initialise();await db.prepare("UPDATE quant_automation_settings SET enabled=? WHERE id='primary'").bind(enabled?1:0).run();
@@ -41,7 +42,7 @@ export async function runAutomaticResearch() {
   const now=Date.now(),to=Math.floor(now/3600000)*3600000;
   const bars=await historicalData(oandaHistory(connection.token,connection.environment),historyCache,{instrument:claim.instrument,timeframe:'H1',from:to-90*86400000,to});
   const prior=await db.prepare('SELECT result_json FROM quant_automation_jobs WHERE instrument=?').bind(claim.instrument).first<{result_json:string|null}>();
-  const previous=prior?.result_json?JSON.parse(prior.result_json) as {discovery?:Discovery;discoveredAt?:number}:null;
+  const previous=parseJson<{discovery?:Discovery;discoveredAt?:number}>(prior?.result_json);
   // Reassess conditions hourly, but search at most once per day and only when
   // there are new completed prices. All candidate definitions remain recorded.
   const reuse=previous?.discovery&&(now-(previous.discoveredAt??0)<86400000||bars.at(-1)!.closeTime<=previous.discovery.to);
