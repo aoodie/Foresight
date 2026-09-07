@@ -32,6 +32,7 @@ export async function POST(request: Request) {
   if (!body?.type || !body.payload || typeof body.payload !== "object") return NextResponse.json({ error: "Invalid autonomous-worker event." }, { status: 400 });
   if (JSON.stringify(body).length > 256_000) return NextResponse.json({ error: "Autonomous-worker event is too large." }, { status: 413 });
   const payload = body.payload;
+  const accountScope = { environment: stringOrNull(payload.environment) ?? undefined, accountId: stringOrNull(payload.accountId) };
   if (body.type === "log") {
     await writeSystemLog({
       level: payload.level === "warning" || payload.level === "error" ? payload.level : "info",
@@ -62,7 +63,7 @@ export async function POST(request: Request) {
     }
     const matched = typeof payload.journalId === "string"
       ? await updateJournalEntry({ id: payload.journalId, status: "open", brokerTradeId: payload.brokerTradeId, notes: stringOrNull(payload.notes), metadata: payload.metadata as Record<string, unknown> })
-      : await updateJournalByBrokerTradeId({ brokerTradeId: payload.brokerTradeId, status: "open", notes: stringOrNull(payload.notes), metadata: payload.metadata as Record<string, unknown> });
+      : await updateJournalByBrokerTradeId({ ...accountScope, brokerTradeId: payload.brokerTradeId, status: "open", notes: stringOrNull(payload.notes), metadata: payload.metadata as Record<string, unknown> });
     if (!matched) return NextResponse.json({ error: "The journal record for this broker activity was not found." }, { status: 404 });
     return NextResponse.json({ ok: true });
   }
@@ -71,9 +72,13 @@ export async function POST(request: Request) {
     if (!journalStatuses.has(payload.status)) return NextResponse.json({ error: "Journal update contains an invalid status." }, { status: 400 });
     if (typeof payload.journalId === "string") {
       const matched = await updateJournalEntry({ id: payload.journalId, status: payload.status, pnl: numberOrNull(payload.pnl), brokerTradeId: payload.brokerTradeId, notes: stringOrNull(payload.notes), closedAt: stringOrNull(payload.closeTime), metadata: closeMetadata(payload) });
-      if (!matched) await updateJournalByBrokerTradeId({ brokerTradeId: payload.brokerTradeId, status: payload.status, pnl: numberOrNull(payload.pnl), notes: stringOrNull(payload.notes), closedAt: stringOrNull(payload.closeTime), metadata: closeMetadata(payload) });
+      if (!matched) {
+        const recovered = await updateJournalByBrokerTradeId({ ...accountScope, brokerTradeId: payload.brokerTradeId, status: payload.status, pnl: numberOrNull(payload.pnl), notes: stringOrNull(payload.notes), closedAt: stringOrNull(payload.closeTime), metadata: closeMetadata(payload) });
+        if (!recovered) return NextResponse.json({ error: 'The journal record was not found. Retry after its entry arrives.' }, { status: 404 });
+      }
     } else {
-      await updateJournalByBrokerTradeId({ brokerTradeId: payload.brokerTradeId, status: payload.status, pnl: numberOrNull(payload.pnl), notes: stringOrNull(payload.notes), closedAt: stringOrNull(payload.closeTime), metadata: closeMetadata(payload) });
+      const matched = await updateJournalByBrokerTradeId({ ...accountScope, brokerTradeId: payload.brokerTradeId, status: payload.status, pnl: numberOrNull(payload.pnl), notes: stringOrNull(payload.notes), closedAt: stringOrNull(payload.closeTime), metadata: closeMetadata(payload) });
+      if (!matched) return NextResponse.json({ error: 'The journal record was not found. Retry after its entry arrives.' }, { status: 404 });
     }
     return NextResponse.json({ ok: true });
   }

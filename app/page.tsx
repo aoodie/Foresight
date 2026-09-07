@@ -455,10 +455,10 @@ export default function Home() {
 
   useEffect(() => {
     if (!aiHydrated || !aiData) return;
-    window.localStorage.setItem(
+    try { window.localStorage.setItem(
       "forex-research-ai-analysis",
       JSON.stringify({ data: aiData, prices: aiPriceSnapshot }),
-    );
+    ); } catch { /* Analysis remains usable when browser storage is full or disabled. */ }
   }, [aiData, aiHydrated, aiPriceSnapshot]);
 
   const generateAiStrategies = useCallback(

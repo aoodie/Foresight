@@ -1,4 +1,4 @@
-import { headers } from "next/headers";
+import { isOwnerRequest } from '@/lib/owner-request';
 import { NextResponse } from "next/server";
 import { getOandaToken, saveOandaToken } from "@/lib/oanda-secret";
 import {
@@ -8,7 +8,7 @@ import {
 } from "@/lib/oanda-api";
 
 async function ownerRequest() {
-  return Boolean((await headers()).get("oai-authenticated-user-email"));
+  return isOwnerRequest();
 }
 
 export async function GET() {
@@ -25,11 +25,12 @@ export async function GET() {
 export async function POST(request: Request) {
   if (!(await ownerRequest()))
     return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
-  const body = (await request.json()) as {
+  const body = (await request.json().catch(() => null)) as {
     token?: string;
     accountId?: string;
     environment?: "practice" | "live";
-  };
+  } | null;
+  if (!body || typeof body.token !== 'string' || body.token.length > 4096 || (body.accountId !== undefined && (typeof body.accountId !== 'string' || body.accountId.length > 128)) || !['practice','live'].includes(body.environment ?? 'practice')) return NextResponse.json({ error: 'Enter valid broker connection fields.' }, { status: 400 });
   const token = body.token?.trim();
   const suppliedAccountId = body.accountId?.trim();
   const environment = body.environment === "live" ? "live" : "practice";

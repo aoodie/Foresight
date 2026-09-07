@@ -16,7 +16,7 @@ export async function POST(request: Request) {
   if (!Number.isFinite(body.riskPercent) || body.riskPercent! <= 0 || body.riskPercent! > MAX_RISK_PERCENT) return NextResponse.json({ error: `Risk must be greater than 0% and no more than ${MAX_RISK_PERCENT}%.` }, { status: 400 });
   if (body.mode === "paper") return NextResponse.json({ error: "The internal paper simulator has been removed. Use the OANDA Demo or Live account path." }, { status: 410 });
   if (body.mode !== "live") return NextResponse.json({ error: "The execution mode must be explicitly set to live OANDA execution." }, { status: 400 });
-  if (!body.confirmLive) return NextResponse.json({ error: "OANDA execution requires explicit confirmation after reviewing the risk controls." }, { status: 409 });
+  if (body.confirmLive !== true) return NextResponse.json({ error: "OANDA execution requires explicit confirmation after reviewing the risk controls." }, { status: 409 });
   const connection = await getOandaToken();
   if (!connection?.accountId) return NextResponse.json({ error: "Connect an OANDA account with an account number first." }, { status: 503 });
   const newsStatus = await getEconomicEventStatus(body.instrument!);
@@ -86,7 +86,7 @@ export async function POST(request: Request) {
       thesis: typeof journal.thesis === "string" ? journal.thesis : null,
       evidence: typeof journal.evidence === "string" ? journal.evidence : null,
       invalidation: typeof journal.invalidation === "string" ? journal.invalidation : null,
-      metadata: { ...journalMetadata, source: "dashboard_manual", clientId, lots, riskSafeUnits: sizing.units, submittedUnits: Math.abs(body.units!), stopDistance: protection.stopDistance, lossConversionFactor: quote.homeConversionFactors.negativeUnits },
+      metadata: { ...journalMetadata, executionIntentId: intent.id, source: "dashboard_manual", clientId, lots, riskSafeUnits: sizing.units, submittedUnits: Math.abs(body.units!), stopDistance: protection.stopDistance, lossConversionFactor: quote.homeConversionFactors.negativeUnits },
       openedAt: null,
     });
     await writeSystemLog({ category: "execution", event: "order.requested", message: `OANDA ${connection.environment} order requested for ${body.instrument}.`, instrument: body.instrument, environment: connection.environment, correlationId, details: { journalId, units: body.units, stopLoss: body.stopLoss, takeProfit: body.takeProfit } });

@@ -1,9 +1,12 @@
 import { type Bar, type ExternalFeature, type MarketContext, timeframeMs } from "./types.ts";
 export function validateBars(bars: readonly Bar[]) {
   let previous = -Infinity;
+  let previousClose = -Infinity;
   for (const b of bars) {
-    if (![b.openTime, b.closeTime, b.availableAt, b.open, b.high, b.low, b.close].every(Number.isFinite) || b.openTime <= previous || b.closeTime <= b.openTime || b.availableAt < b.closeTime || Math.min(b.open, b.high, b.low, b.close) <= 0 || b.high < Math.max(b.open, b.close, b.low) || b.low > Math.min(b.open, b.close)) throw new Error("Invalid, duplicate, unordered, or backward-filled bar.");
+    if (!b || typeof b.complete !== 'boolean' || ![b.openTime, b.closeTime, b.availableAt, b.open, b.high, b.low, b.close].every(Number.isFinite) || b.openTime <= previous || b.openTime < previousClose || b.closeTime <= b.openTime || b.availableAt < b.closeTime || Math.min(b.open, b.high, b.low, b.close) <= 0 || b.high < Math.max(b.open, b.close, b.low) || b.low > Math.min(b.open, b.close)) throw new Error("Invalid, duplicate, overlapping, unordered, or backward-filled bar.");
+    if (![b.openTime,b.closeTime,b.availableAt].every(t => Number.isSafeInteger(t) && Math.abs(t) <= 8640000000000000)) throw new Error('Invalid bar timestamp.');
     previous = b.openTime;
+    previousClose = b.closeTime;
   }
 }
 export function marketContext(input: { instrument: string; timeframe: string; asOf: number; bars: readonly Bar[]; higherBars?: readonly Bar[]; newsRisk?: boolean | null; external?: readonly ExternalFeature[]; historical?: boolean }): MarketContext {

@@ -4,6 +4,12 @@ Updated: 2026-09-06. This is a planned backlog, not a claim of completed work.
 Priority order: trustworthy records → reproducible research → prospective paper
 evidence → controlled promotion → wider strategy coverage.
 
+Hardening audit: see [confirmed fixes and remaining risks](docs/HARDENING-AUDIT.md).
+The audit fixes access control, credential forwarding, account isolation, journal
+validation, broker P&L accounting and recovery edges, data validation and known
+dependency vulnerabilities. Product milestones below remain unchecked unless all
+their requirements have been demonstrated.
+
 ## P0 — Trustworthy trading records and execution
 
 - [ ] Record an immutable signal snapshot: strategy ID/version/parameters, market

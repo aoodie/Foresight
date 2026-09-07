@@ -1,8 +1,8 @@
-import { headers } from "next/headers";
+import { isOwnerRequest } from '@/lib/owner-request';
 import { NextResponse } from "next/server";
 import { env } from "cloudflare:workers";
 
-async function ownerRequest() { return Boolean((await headers()).get("oai-authenticated-user-email")); }
+const ownerRequest = isOwnerRequest;
 const runtime = env as unknown as { DB: D1Database };
 
 export async function GET(request: Request) {

@@ -1,4 +1,5 @@
 import { aiEndpoint } from './ai-config.ts';
+import { boundedBody } from './request-security.ts';
 export type LlmProtocol = 'responses' | 'chat_completions' | 'chat_json' | 'chat_text' | 'anthropic';
 export const modelRoles = ['fast','reasoning','research','critic','chat'] as const;
 export type ModelRole = typeof modelRoles[number];
@@ -22,10 +23,13 @@ export async function llmFetch(url: string, init: RequestInit, protocol: LlmProt
   body={model:original.model,max_tokens:original.max_output_tokens??4096,system:(original.instructions??'')+(format?`\nReturn only a JSON object matching this schema: ${JSON.stringify(format.schema)}`:''),messages:[{role:'user',content:original.input??''}]};
  }
  let response:Response;
- try { response=await fetch(target,{...init,headers,body:JSON.stringify(body),signal:init.signal??AbortSignal.timeout(60000),redirect:'error'}); }
+ try { response=await fetch(target,{...init,headers,body:JSON.stringify(body),signal:init.signal?AbortSignal.any([init.signal,AbortSignal.timeout(60000)]):AbortSignal.timeout(60000),redirect:'error'}); }
  catch { throw new Error('The model provider timed out or could not be reached. Your trading rules have not changed.'); }
- if(protocol==='responses'||!response.ok)return response;
- const data=await response.json() as {id?:string;usage?:unknown;choices?:Array<{message?:{content?:string};finish_reason?:string}>;content?:Array<{type?:string;text?:string}>;stop_reason?:string};
+ if(!response.ok) { await response.body?.cancel(); return Response.json({error:{message:`The model provider rejected the request (${response.status}). Check its connection and model settings.`}},{status:response.status}); }
+ const bytes=await boundedBody(response,1024*1024);
+ const data=JSON.parse(new TextDecoder().decode(bytes)) as {status?:string;id?:string;usage?:unknown;choices?:Array<{message?:{content?:string};finish_reason?:string}>;content?:Array<{type?:string;text?:string}>;stop_reason?:string};
+ if(data.status==='incomplete'||data.status==='failed')throw new Error('The model did not finish a complete response. No decision was accepted.');
+ if(protocol==='responses')return new Response(bytes,response);
  if(data.choices?.[0]?.finish_reason==='length'||data.stop_reason==='max_tokens')throw new Error('The model response was truncated. Choose a model with sufficient output capacity.');
  const output=protocol==='anthropic'?data.content?.filter(c=>c.type==='text').map(c=>c.text??'').join('\n'):data.choices?.[0]?.message?.content;
  return Response.json({id:data.id,usage:data.usage,output:[{content:[{type:'output_text',text:output??''}]}]});

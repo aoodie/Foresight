@@ -1,18 +1,14 @@
 import { journalInsights } from "@/lib/journal-context";
-import { headers } from "next/headers";
+import { isOwnerRequest } from '@/lib/owner-request';
 import { NextResponse } from "next/server";
 import { backfillJournalLifecycleEvents, createJournalEntry, reconcileJournalFromBrokerSnapshot, updateJournalEntry } from "@/lib/trading-records";
 import { getOandaToken } from "@/lib/oanda-secret";
 import { fetchOandaOpenTrades, fetchOandaOrderFills } from "@/lib/oanda-api";
 import { env } from "cloudflare:workers";
+import { journalCreateSchema, journalUpdateSchema } from '@/lib/journal-validation';
 
-async function ownerRequest() { return Boolean((await headers()).get("oai-authenticated-user-email")); }
+const ownerRequest = isOwnerRequest;
 const runtime = env as unknown as { DB: D1Database };
-const JOURNAL_INSTRUMENTS = new Set(["EUR_USD", "GBP_USD", "USD_JPY", "USD_CHF", "AUD_USD", "NZD_USD", "USD_CAD", "EUR_GBP", "EUR_JPY", "GBP_JPY"]);
-const DIRECTIONS = new Set(["long", "short"]);
-const STYLES = new Set(["intraday", "swing", "scalp", "position"]);
-const finite = (value: unknown) => typeof value === "number" && Number.isFinite(value);
-const boundedText = (value: unknown, max: number) => typeof value === "string" && value.length <= max ? value : null;
 
 export async function GET(request: Request) {
   if (!(await ownerRequest())) return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
@@ -43,14 +39,9 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   if (!(await ownerRequest())) return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
-  const body = await request.json().catch(() => null) as Record<string, unknown> | null;
-  if (!body || typeof body.instrument !== "string" || typeof body.direction !== "string" || typeof body.style !== "string") return NextResponse.json({ error: "Instrument, direction and trading style are required." }, { status: 400 });
-  if (!JOURNAL_INSTRUMENTS.has(body.instrument) || !DIRECTIONS.has(body.direction) || !STYLES.has(body.style)) return NextResponse.json({ error: "Use a supported market, direction and trading style." }, { status: 400 });
-  const numericFields = ["entryPrice", "stopLoss", "takeProfit1", "takeProfit2", "units", "lots", "riskPercent", "riskAmount", "pnl"];
-  if (numericFields.some((field) => body[field] !== undefined && body[field] !== null && !finite(body[field]))) return NextResponse.json({ error: "Prices, size and risk values must be finite numbers." }, { status: 400 });
-  if (typeof body.metadata === "object" && body.metadata !== null && JSON.stringify(body.metadata).length > 12000) return NextResponse.json({ error: "Journal metadata is too large." }, { status: 413 });
-  const textFields = ["strategyName", "setupType", "thesis", "evidence", "invalidation", "notes"];
-  if (textFields.some((field) => body[field] !== undefined && body[field] !== null && boundedText(body[field], 8000) === null)) return NextResponse.json({ error: "Journal text fields must be under 8,000 characters." }, { status: 400 });
+  const parsed = journalCreateSchema.safeParse(await request.json().catch(() => null));
+  if (!parsed.success) return NextResponse.json({ error: parsed.error.issues[0]?.message ?? 'Invalid journal entry.' }, { status: 400 });
+  const body = parsed.data;
   try {
     const id = await createJournalEntry({
       environment: body.environment === "live" || body.environment === "practice" ? body.environment : (await getOandaToken())?.environment ?? "practice",
@@ -84,10 +75,11 @@ export async function POST(request: Request) {
 
 export async function PATCH(request: Request) {
   if (!(await ownerRequest())) return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
-  const body = await request.json().catch(() => null) as Record<string, unknown> | null;
-  if (!body || typeof body.id !== "string") return NextResponse.json({ error: "Journal entry ID is required." }, { status: 400 });
+  const parsed = journalUpdateSchema.safeParse(await request.json().catch(() => null));
+  if (!parsed.success) return NextResponse.json({ error: parsed.error.issues[0]?.message ?? 'Invalid journal update.' }, { status: 400 });
+  const body = parsed.data;
   try {
-    await updateJournalEntry({
+    const changed = await updateJournalEntry({
       id: body.id,
       status: typeof body.status === "string" ? body.status : undefined,
       pnl: typeof body.pnl === "number" ? body.pnl : null,
@@ -95,6 +87,7 @@ export async function PATCH(request: Request) {
       notes: typeof body.notes === "string" ? body.notes : null,
       closedAt: typeof body.closedAt === "string" ? body.closedAt : null,
     });
+    if (!changed) return NextResponse.json({ error: 'Journal entry was not found.' }, { status: 404 });
     return NextResponse.json({ status: "updated" });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Unable to update journal entry." }, { status: 503 });

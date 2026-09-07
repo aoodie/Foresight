@@ -54,7 +54,7 @@ function hostFor(environment: OandaEnvironment) {
 async function oandaJson<T>(url: string, token: string): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store", signal: AbortSignal.timeout(20000) });
+    response = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store", signal: AbortSignal.timeout(20000), redirect: 'error' });
   } catch {
     throw new OandaApiError("OANDA could not be reached. Try again shortly.", 502);
   }
@@ -90,9 +90,9 @@ export async function submitOandaMarketOrder(args: {
   try {
     response = await fetch(`https://${host}/v3/accounts/${encodeURIComponent(args.accountId)}/orders`, {
       method: "POST", headers: { Authorization: `Bearer ${args.token}`, "Content-Type": "application/json" },
-      body: JSON.stringify(body), cache: "no-store",
+      body: JSON.stringify(body), cache: "no-store", signal: AbortSignal.timeout(20000), redirect: 'error',
     });
-  } catch { throw new OandaApiError("OANDA could not be reached. Try again shortly.", 502); }
+  } catch { throw new OandaApiError("OANDA did not confirm the order outcome. Reconcile with the broker before submitting another order.", 502); }
   const payload = (await response.json().catch(() => ({}))) as {
     orderFillTransaction?: {
       id?: string; time?: string; units?: string; price?: string; pl?: string; reason?: string;
@@ -108,7 +108,9 @@ export async function submitOandaMarketOrder(args: {
   if (!payload.orderFillTransaction?.id) throw new OandaApiError(payload.orderCancelTransaction?.reason || "OANDA did not confirm an order fill.", 502);
   const fill = payload.orderFillTransaction;
   const fillPrice = Number(fill?.price);
-  const realisedPnl = Number(fill?.pl ?? fill?.tradeReduced?.realizedPL ?? 0) +
+  // Transaction pl already includes its reduced/closed trades. Only sum the
+  // allocations as a fallback when the aggregate is absent.
+  const realisedPnl = fill?.pl != null ? Number(fill.pl) : Number(fill?.tradeReduced?.realizedPL ?? 0) +
     (fill?.tradesClosed ?? []).reduce((sum, trade) => sum + Number(trade.realizedPL ?? 0), 0);
   return {
     orderId: payload.orderCreateTransaction?.id ?? null,
@@ -132,9 +134,9 @@ export async function closeOandaTrade(args: { token: string; environment: OandaE
       method: "PUT",
       headers: { Authorization: `Bearer ${args.token}`, "Content-Type": "application/json" },
       body: JSON.stringify({ units: "ALL" }),
-      cache: "no-store",
+      cache: "no-store", signal: AbortSignal.timeout(20000), redirect: 'error',
     });
-  } catch { throw new OandaApiError("OANDA could not be reached. Try again shortly.", 502); }
+  } catch { throw new OandaApiError("OANDA did not confirm the close outcome. Refresh broker positions before trying again.", 502); }
   const payload = (await response.json().catch(() => ({}))) as { orderFillTransaction?: { id?: string; time?: string; pl?: string; price?: string; reason?: string }; errorMessage?: string };
   if (!response.ok) throw new OandaApiError(payload.errorMessage || `OANDA could not close trade (${response.status}).`, response.status);
   if (!payload.orderFillTransaction?.id) throw new OandaApiError("OANDA did not confirm that the trade was closed.", 502);
@@ -152,7 +154,7 @@ export function normaliseOandaPrice(payload: OandaPricingPayload, instrument?: s
   const quote = payload.prices?.[0];
   const bid = Number(quote?.bids?.[0]?.price ?? quote?.closeoutBid);
   const ask = Number(quote?.asks?.[0]?.price ?? quote?.closeoutAsk);
-  if (!quote?.time || !Number.isFinite(bid) || !Number.isFinite(ask)) throw new OandaApiError("OANDA returned no usable live quote.", 502);
+  if (!quote?.time || !Number.isFinite(bid) || !Number.isFinite(ask) || bid <= 0 || ask < bid) throw new OandaApiError("OANDA returned no usable live quote.", 502);
   const quoteCurrency = instrument?.split("_").at(-1);
   const homeConversion = quoteCurrency ? payload.homeConversions?.find((item) => item.currency === quoteCurrency) : null;
   const positiveUnits = Number(quote.quoteHomeConversionFactors?.positiveUnits ?? homeConversion?.accountGain);
@@ -166,7 +168,7 @@ export function normaliseOandaPrice(payload: OandaPricingPayload, instrument?: s
     mid: (bid + ask) / 2,
     spread: ask - bid,
     time: quote.time,
-    tradeable: Boolean(quote.tradeable),
+    tradeable: quote.tradeable === true,
     marketStatus: quote.status ?? (quote.tradeable ? "tradeable" : "closed"),
     homeConversionFactors: {
       positiveUnits,

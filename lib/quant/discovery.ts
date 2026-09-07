@@ -3,6 +3,7 @@ import { replay,performance } from './replay.ts';
 import { senseConditions } from './adaptive.ts';
 import { marketContext } from './context.ts';
 import { decide } from './engine.ts';
+import { dataQuality } from './data-quality.ts';
 const p=(feature:RulePredicate['feature'],op:RulePredicate['op'],value:number):RulePredicate=>({feature,op,value});
 const templates:Array<{name:string;reason:string;conditions:Regime[];rules:RuleSet}>=[
  {name:'Recovery through the average',reason:'Price crosses back through its recent average in the direction that average is moving.',conditions:['strong_trend','weak_trend'],rules:{long:[p('previousDistance','lt',0),p('distance','gt',0),p('trend','gt',0)],short:[p('previousDistance','gt',0),p('distance','lt',0),p('trend','lt',0)]}},
@@ -24,6 +25,7 @@ export function generateCandidates(instrument:string):readonly Strategy[]{
 const regimes:Regime[]=['strong_trend','weak_trend','range','compression','volatility_expansion'];
 export function discoverStrategies(instrument:string,bars:readonly Bar[],costBps=2){
  if(bars.length<800||bars.length>6000)throw new Error('Strategy discovery requires 800–6,000 completed prices.');
+ const quality = dataQuality(bars, 'H1');
  const holdout=Math.floor(bars.length*.8),developmentEnd=holdout-50,midpoint=Math.floor(developmentEnd/2);
  const args={instrument,timeframe:'H1',bars,costBps};
  const candidates=generateCandidates(instrument).map(strategy=>{
@@ -46,7 +48,7 @@ export function discoverStrategies(instrument:string,bars:readonly Bar[],costBps
   const checks=[{label:'At least 30 reserved-period trades in this condition',pass:evaluation.performance.trades>=30},{label:'Positive results after estimated costs',pass:evaluation.performance.netR>0},{label:'Positive results when estimated costs double',pass:stressed.performance.netR>0},{label:'Largest decline no greater than 10 times initial risk',pass:evaluation.performance.maxDrawdownR<=10}];
   return {condition,strategy,checks,performance:evaluation.performance,status:checks.every(c=>c.pass)?'awaiting_future_paper_test' as const:'failed_reserved_checks' as const};
  });
- return {instrument,timeframe:'H1',grammarVersion:'grammar-v1',candidateCount:candidates.length,costBps,from:bars[0].openTime,to:bars.at(-1)!.closeTime,holdoutFrom:bars[holdout].openTime,gapBars:50,candidates,finalists,limitations:['Search covers a bounded rule grammar, not every possible strategy.','Twenty-four candidates and up to five condition finalists create selection bias; no statistical significance is claimed.','Overlapping daily history is not independent evidence.','Midpoint prices and estimated costs omit historical news, variable spreads and financing.'],executionEnabled:false};
+ return {instrument,timeframe:'H1',grammarVersion:'grammar-v1',candidateCount:candidates.length,costBps,from:bars[0].openTime,to:bars.at(-1)!.closeTime,holdoutFrom:bars[holdout].openTime,gapBars:50,quality,candidates,finalists,limitations:['Search covers a bounded rule grammar, not every possible strategy.','Twenty-four candidates and up to five condition finalists create selection bias; no statistical significance is claimed.','Overlapping daily history is not independent evidence.','Midpoint prices and estimated costs omit historical news, variable spreads and financing.'],executionEnabled:false};
 }
 export type Discovery=ReturnType<typeof discoverStrategies>;
 export function discoveryObservation(discovery:Discovery,bars:readonly Bar[],now:number){

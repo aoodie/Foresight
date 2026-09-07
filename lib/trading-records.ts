@@ -1,5 +1,6 @@
 import { entryContext } from "./journal-context";
 import { env } from "cloudflare:workers";
+import { finishExecution } from './execution-intents';
 import { foresightJournalId, foresightTradeSource, type JournalTradeSource } from "./trade-monitoring";
 import { standardLots } from "./trade-risk";
 import { missingJournalRecordsFromFills, type JournalRecoveryFill } from "./journal-recovery";
@@ -120,6 +121,8 @@ async function appendHistoricalOpenEvent(id: string) {
 
 export async function createJournalEntry(input: JournalRecordInput) {
   let id = input.id ?? crypto.randomUUID();
+  const identity = await runtime.DB.prepare('SELECT environment, account_id, instrument, direction FROM trade_journal WHERE id = ?').bind(id).first<{environment:string;account_id:string|null;instrument:string;direction:string}>();
+  if (identity && (identity.environment !== input.environment || identity.account_id !== (input.accountId ?? null) || identity.instrument !== input.instrument || identity.direction !== input.direction)) throw new Error('A journal ID cannot be reassigned to another account or trade.');
   let metadata = input.metadata;
   if (input.brokerTradeId) {
     const existing = await runtime.DB.prepare("SELECT id FROM trade_journal WHERE broker_trade_id = ? AND environment = ? AND account_id IS ? ORDER BY created_at ASC LIMIT 1")
@@ -135,10 +138,10 @@ export async function createJournalEntry(input: JournalRecordInput) {
   }
   const now = new Date().toISOString();
   await runtime.DB.prepare(`INSERT INTO trade_journal (id, created_at, updated_at, environment, account_id, instrument, direction, style, strategy_name, setup_type, status, entry_price, stop_loss, take_profit_1, take_profit_2, units, lots, risk_percent, risk_amount, pnl, broker_trade_id, thesis, evidence, invalidation, notes, opened_at, closed_at, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at, environment = excluded.environment,
-      account_id = excluded.account_id, instrument = excluded.instrument, direction = excluded.direction,
+    ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at, environment = trade_journal.environment,
+      account_id = trade_journal.account_id, instrument = trade_journal.instrument, direction = trade_journal.direction,
       style = trade_journal.style, strategy_name = COALESCE(trade_journal.strategy_name, excluded.strategy_name), setup_type = COALESCE(trade_journal.setup_type, excluded.setup_type),
-      status = CASE WHEN trade_journal.status IN ('closed', 'cancelled', 'win', 'loss', 'breakeven') AND excluded.status IN ('planned', 'submitted', 'open') THEN trade_journal.status ELSE excluded.status END,
+      status = CASE WHEN trade_journal.status IN ('closed', 'cancelled', 'win', 'loss', 'breakeven') AND excluded.status IN ('planned', 'submitted', 'open', 'reconciliation_required') THEN trade_journal.status ELSE excluded.status END,
       entry_price = COALESCE(trade_journal.entry_price, excluded.entry_price), stop_loss = COALESCE(trade_journal.stop_loss, excluded.stop_loss),
       take_profit_1 = COALESCE(trade_journal.take_profit_1, excluded.take_profit_1), take_profit_2 = COALESCE(trade_journal.take_profit_2, excluded.take_profit_2),
       units = COALESCE(trade_journal.units, excluded.units), lots = COALESCE(excluded.lots, trade_journal.lots),
@@ -172,18 +175,13 @@ export async function updateJournalEntry(input: { id: string; status?: string; p
   return changes;
 }
 
-export async function updateJournalByBrokerTradeId(input: { brokerTradeId: string; status: string; pnl?: number | null; notes?: string | null; closedAt?: string | null; metadata?: Record<string, unknown> }) {
-  const now = new Date().toISOString();
-  const closedAt = input.closedAt ?? (["closed", "cancelled", "win", "loss", "breakeven"].includes(input.status) ? now : null);
-  const metadataJson = input.metadata == null ? null : json(input.metadata);
-  const result = await runtime.DB.prepare("UPDATE trade_journal SET status = CASE WHEN status IN ('closed', 'cancelled', 'win', 'loss', 'breakeven') AND ? IN ('planned', 'submitted', 'open', 'reconciliation_required') THEN status ELSE ? END, pnl = COALESCE(?, pnl), notes = COALESCE(?, notes), closed_at = COALESCE(closed_at, ?), metadata_json = CASE WHEN ? IS NULL THEN metadata_json ELSE json_patch(CASE WHEN json_valid(metadata_json) THEN metadata_json ELSE '{}' END, ?) END, updated_at = ? WHERE broker_trade_id = ?")
-    .bind(input.status, input.status, input.pnl ?? null, input.notes ?? null, closedAt, metadataJson, metadataJson, now, input.brokerTradeId).run();
-  const changes = Number(result.meta?.changes ?? 0);
-  if (changes) {
-    const row = await runtime.DB.prepare("SELECT id FROM trade_journal WHERE broker_trade_id = ? ORDER BY created_at ASC LIMIT 1").bind(input.brokerTradeId).first<{ id: string }>();
-    if (row) await appendCurrentJournalEvent(row.id, input.metadata);
-  }
-  return changes;
+export async function updateJournalByBrokerTradeId(input: { brokerTradeId: string; environment?: string; accountId?: string | null; status: string; pnl?: number | null; notes?: string | null; closedAt?: string | null; metadata?: Record<string, unknown> }) {
+  const rows = input.environment && input.accountId
+    ? await runtime.DB.prepare('SELECT id FROM trade_journal WHERE broker_trade_id = ? AND environment = ? AND account_id = ? LIMIT 2').bind(input.brokerTradeId, input.environment, input.accountId).all<{id:string}>()
+    : await runtime.DB.prepare('SELECT id FROM trade_journal WHERE broker_trade_id = ? LIMIT 2').bind(input.brokerTradeId).all<{id:string}>();
+  if (rows.results.length > 1) throw new Error('Broker trade ID is ambiguous; account and environment are required.');
+  if (!rows.results.length) return 0;
+  return updateJournalEntry({ ...input, id: rows.results[0].id });
 }
 
 async function enrichRecoveredJournal(input: {
@@ -294,14 +292,14 @@ export async function reconcileJournalFromBrokerSnapshot(input: {
 }) {
   const reclassifiedAt = new Date().toISOString();
   const legacyMetadata = json({ source: "project_recovery", reclassifiedAt });
-  const reclassified = await runtime.DB.prepare("UPDATE trade_journal SET strategy_name = CASE WHEN strategy_name = 'OANDA broker import' THEN 'Foresight project recovery' ELSE strategy_name END, metadata_json = json_patch(CASE WHEN json_valid(metadata_json) THEN metadata_json ELSE '{}' END, ?), updated_at = ? WHERE strategy_name = 'OANDA broker import' OR COALESCE(json_extract(metadata_json, '$.source'), '') = 'broker_account'")
-    .bind(legacyMetadata, reclassifiedAt).run();
+  const reclassified = await runtime.DB.prepare("UPDATE trade_journal SET strategy_name = CASE WHEN strategy_name = 'OANDA broker import' THEN 'Foresight project recovery' ELSE strategy_name END, metadata_json = json_patch(CASE WHEN json_valid(metadata_json) THEN metadata_json ELSE '{}' END, ?), updated_at = ? WHERE environment = ? AND account_id IS ? AND (strategy_name = 'OANDA broker import' OR COALESCE(json_extract(CASE WHEN json_valid(metadata_json) THEN metadata_json ELSE '{}' END, '$.source'), '') = 'broker_account')")
+    .bind(legacyMetadata, reclassifiedAt, input.environment, input.accountId ?? null).run();
   const reclassifiedUpdates = Number(reclassified.meta?.changes ?? 0);
   if (reclassifiedUpdates) {
     await writeSystemLog({ category: "reconciliation", event: "journal.project_ownership_restored", message: `${reclassifiedUpdates} recovered journal record(s) reclassified as Foresight project trades.`, environment: input.environment, details: { reclassifiedUpdates } });
   }
 
-  const knownRows = await runtime.DB.prepare("SELECT id, broker_trade_id, metadata_json FROM trade_journal LIMIT 2000").all<KnownJournalRow>();
+  const knownRows = await runtime.DB.prepare("SELECT id, broker_trade_id, metadata_json FROM trade_journal WHERE environment = ? AND account_id IS ?").bind(input.environment, input.accountId ?? null).all<KnownJournalRow>();
   const knownById = new Map((knownRows.results ?? []).map((row) => [row.id, row]));
   const brokerRows = (knownRows.results ?? []).filter((row): row is KnownJournalRow & { broker_trade_id: string } => typeof row.broker_trade_id === "string");
   const knownBrokerIds = new Set(brokerRows.map((row) => row.broker_trade_id));
@@ -406,7 +404,7 @@ export async function reconcileJournalFromBrokerSnapshot(input: {
     importedUpdates += 1;
   }
 
-  const rows = await runtime.DB.prepare("SELECT id, broker_trade_id, instrument, status, opened_at, metadata_json FROM trade_journal WHERE broker_trade_id IS NOT NULL AND status IN ('submitted', 'open', 'reconciliation_required') ORDER BY created_at ASC LIMIT 200").all<{
+  const rows = await runtime.DB.prepare("SELECT id, broker_trade_id, instrument, status, opened_at, metadata_json FROM trade_journal WHERE environment = ? AND account_id IS ? AND broker_trade_id IS NOT NULL AND status IN ('submitted', 'open', 'reconciliation_required') ORDER BY created_at ASC LIMIT 200").bind(input.environment, input.accountId ?? null).all<{
     id: string; broker_trade_id: string; instrument: string; status: string; opened_at: string | null; metadata_json: string | null;
   }>();
   let activityUpdates = 0;
@@ -443,5 +441,15 @@ export async function reconcileJournalFromBrokerSnapshot(input: {
     closedUpdates += 1;
   }
 
-  return { checked: rows.results?.length ?? 0, reclassifiedUpdates, importedUpdates, activityUpdates, closedUpdates };
+  let resolvedIntents = 0;
+  for (const row of knownById.values()) {
+    const metadata = parsedMetadata(row.metadata_json);
+    if (typeof metadata.executionIntentId !== 'string' || typeof metadata.clientId !== 'string') continue;
+    const fill = input.fills.find(f => f.isEntry && f.clientId === metadata.clientId);
+    const open = input.openTrades.find(t => t.clientId === metadata.clientId);
+    if (!fill && !open) continue;
+    await finishExecution(metadata.executionIntentId, 'filled', { status: 'reconciled', journalId: row.id, tradeId: fill?.openedTradeId ?? open?.id ?? null, fillTransactionId: fill?.id ?? null, fillTime: fill?.time ?? open?.openTime ?? null });
+    resolvedIntents++;
+  }
+  return { checked: rows.results?.length ?? 0, reclassifiedUpdates, importedUpdates, activityUpdates, closedUpdates, resolvedIntents };
 }

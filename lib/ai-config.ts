@@ -8,9 +8,13 @@ export function normalizeAiBaseUrl(value?: string) {
   } catch {
     throw new Error("Enter a valid LLM API base URL.");
   }
-  if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password || parsed.search || parsed.hash) {
-    throw new Error("LLM API base URL must be an HTTP(S) URL without credentials, query parameters, or fragments.");
+  if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw new Error("LLM API base URL must use HTTPS without credentials, query parameters, or fragments.");
   }
+  const host = parsed.hostname.toLowerCase().replace(/\.$/, '');
+  // Hosted connections must use public DNS names. This also blocks alternate
+  // IPv4 spellings after URL normalization and all IPv6 literal addresses.
+  if (!host.includes('.') || /^[\d.]+$/.test(host) || host.includes(':') || /(?:^|\.)(localhost|local|internal|test|invalid)$/.test(host)) throw new Error('Use a public model-provider hostname.');
   const pathname = parsed.pathname.replace(/\/+$/, "");
   return `${parsed.origin}${pathname}`;
 }

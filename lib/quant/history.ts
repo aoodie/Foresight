@@ -14,9 +14,11 @@ export async function historicalData(provider: MarketDataProvider, cache: Histor
     let rows = await cache.read(key);
     if (!rows) {
       rows = await provider.fetchHistory({ ...request, from, to }); validateBars(rows);
-      if (rows.some((b) => !b.complete || b.openTime < from || b.closeTime > to)) throw new Error("Provider returned incomplete or out-of-range history.");
+      if (rows.some((b) => !b.complete || b.openTime < from || b.closeTime > to || b.availableAt > to || b.closeTime - b.openTime !== step)) throw new Error("Provider returned incomplete or out-of-range history.");
       await cache.write(key, rows);
     }
+    validateBars(rows);
+    if (rows.some(b => !b.complete || b.openTime < from || b.closeTime > to || b.availableAt > to || b.closeTime - b.openTime !== step)) throw new Error('Cached history is incomplete or outside the requested time range.');
     result.push(...rows.filter((b) => b.openTime >= request.from && b.closeTime <= request.to));
   }
   validateBars(result); return result;
@@ -24,6 +26,6 @@ export async function historicalData(provider: MarketDataProvider, cache: Histor
 export function parseCandleCsv(csv: string, timeframe: string): Bar[] {
   const duration = timeframeMs[timeframe]; if (!duration) throw new Error("Unsupported timeframe.");
   const lines = csv.trim().split(/\r?\n/); if (lines.shift()?.trim() !== "time,open,high,low,close") throw new Error("CSV columns must be time,open,high,low,close.");
-  const bars = lines.map((line) => { const [time,o,h,l,c,...extra] = line.split(','); if (extra.length) throw new Error("Unexpected CSV columns."); const openTime = Date.parse(time); return { openTime, closeTime: openTime + duration, availableAt: openTime + duration, open:Number(o), high:Number(h), low:Number(l), close:Number(c), complete:true }; });
+  const bars = lines.map((line) => { const [time,o,h,l,c,...extra] = line.split(','); if (extra.length) throw new Error("Unexpected CSV columns."); if (!/(?:Z|[+-]\d{2}:\d{2})$/i.test(time)) throw new Error('CSV timestamps must include UTC Z or an explicit timezone offset.'); const openTime = Date.parse(time); return { openTime, closeTime: openTime + duration, availableAt: openTime + duration, open:Number(o), high:Number(h), low:Number(l), close:Number(c), complete:true }; });
   validateBars(bars); return bars;
 }

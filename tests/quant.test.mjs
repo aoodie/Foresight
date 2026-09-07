@@ -70,7 +70,7 @@ test('historical cache fetches only uncached chunks and CSV validates ordering',
  const provider={id:'test',async fetchHistory(r){calls++;return bars.filter(b=>b.openTime>=r.from&&b.closeTime<=r.to);}};
  const query={instrument:'EUR_USD',timeframe:'H1',from:0,to:220*3600000};
  assert.equal((await historicalData(provider,cache,query)).length,220); await historicalData(provider,cache,query);assert.equal(calls,1);
- assert.throws(()=>parseCandleCsv('time,open,high,low,close\n2020-01-01,1,2,0,1','H1'),/Invalid/);
+ assert.throws(()=>parseCandleCsv('time,open,high,low,close\n2020-01-01T00:00:00Z,1,2,0,1','H1'),/Invalid/);
 });
 test('research candidate selection cannot observe final holdout returns',async()=>{
  const {research}=await vite.ssrLoadModule('/lib/quant/research.ts');

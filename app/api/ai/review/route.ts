@@ -1,11 +1,11 @@
-import { headers } from "next/headers";
+import { isOwnerRequest } from '@/lib/owner-request';
 import { NextResponse } from "next/server";
 import { getAiKey } from "@/lib/ai-secret";
 import { reviewLiveTrade } from "@/lib/openai-strategy";
 import { writeSystemLog } from "@/lib/trading-records";
 import { hashAiInput, readCachedDecision, storeDecision, withInFlightDedup } from "@/lib/ai-cache";
 
-async function ownerRequest() { return Boolean((await headers()).get("oai-authenticated-user-email")); }
+const ownerRequest = isOwnerRequest;
 
 export async function POST(request: Request) {
   if (!(await ownerRequest())) return NextResponse.json({ error: "Unauthorised" }, { status: 401 });

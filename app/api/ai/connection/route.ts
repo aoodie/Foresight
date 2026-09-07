@@ -1,9 +1,9 @@
-import { headers } from "next/headers";
+import { isOwnerRequest } from '@/lib/owner-request';
 import { NextResponse } from "next/server";
 import { getAiKey, saveAiKey } from "@/lib/ai-secret";
 import { aiEndpoint, defaultAiBaseUrl, normalizeAiBaseUrl } from "@/lib/ai-config";
 
-async function ownerRequest() { return Boolean((await headers()).get("oai-authenticated-user-email")); }
+const ownerRequest = isOwnerRequest;
 
 export async function GET() {
   if (!(await ownerRequest())) return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
@@ -13,7 +13,8 @@ export async function GET() {
 
 export async function POST(request: Request) {
   if (!(await ownerRequest())) return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
-  const body = await request.json() as { apiKey?: string; model?: string; baseUrl?: string };
+  const body = await request.json().catch(() => null) as { apiKey?: string; model?: string; baseUrl?: string } | null;
+  if (!body || [body.apiKey, body.model, body.baseUrl].some(v => v !== undefined && (typeof v !== 'string' || v.length > 4096))) return NextResponse.json({ error: 'Enter valid connection fields.' }, { status: 400 });
   const existing = await getAiKey();
   const apiKey = body.apiKey?.trim() || existing?.apiKey;
   if (!apiKey) return NextResponse.json({ error: "Enter an API key for the selected LLM provider." }, { status: 400 });
@@ -25,10 +26,12 @@ export async function POST(request: Request) {
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Enter a valid LLM API base URL." }, { status: 400 });
   }
-  const check = await fetch(aiEndpoint(baseUrl, "/models"), { headers: { Authorization: `Bearer ${apiKey}` } });
+  if (existing && baseUrl !== existing.baseUrl && !body.apiKey?.trim()) return NextResponse.json({ error: 'Enter a new API key when changing the provider address.' }, { status: 400 });
+  let check: Response;
+  try { check = await fetch(aiEndpoint(baseUrl, "/models"), { headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(15000), redirect: 'error' }); }
+  catch { return NextResponse.json({ error: 'The model provider could not be reached securely.' }, { status: 502 }); }
   if (!check.ok) {
-    const payload = await check.json().catch(() => ({})) as { error?: { message?: string } };
-    return NextResponse.json({ connected: false, error: payload.error?.message || "The LLM provider rejected this API key or base URL." }, { status: check.status });
+    return NextResponse.json({ connected: false, error: 'The LLM provider rejected this API key or base URL.' }, { status: 502 });
   }
   await saveAiKey(apiKey, model, baseUrl);
   return NextResponse.json({ connected: true, model, baseUrl });

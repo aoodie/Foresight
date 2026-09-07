@@ -37,7 +37,52 @@ test('the entry context remains unchanged by later reviews',async()=>{
  await updateJournalEntry({id:'snapshot',status:'closed',metadata:{strategyVersion:'fake',marketRegime:{type:'range'}}});
  assert.equal(sqlite.prepare('SELECT context_json FROM trade_entry_context WHERE journal_id = ?').get('snapshot').context_json,before);
 });
+test('broker IDs cannot cross accounts and journal IDs cannot be reassigned',async()=>{
+ const {createJournalEntry,updateJournalByBrokerTradeId,reconcileJournalFromBrokerSnapshot}=await vite.ssrLoadModule('/lib/trading-records.ts');
+ const entry={environment:'practice',instrument:'EUR_USD',direction:'long',style:'intraday',brokerTradeId:'shared-id',status:'open'};
+ await createJournalEntry({...entry,id:'account-a-trade',accountId:'account-a'});
+ await createJournalEntry({...entry,id:'account-b-trade',accountId:'account-b'});
+ await assert.rejects(createJournalEntry({...entry,id:'account-a-trade',accountId:'account-b'}),/reassigned/);
+ await assert.rejects(updateJournalByBrokerTradeId({brokerTradeId:'shared-id',status:'closed'}),/ambiguous/);
+ await updateJournalByBrokerTradeId({brokerTradeId:'shared-id',environment:'practice',accountId:'account-a',status:'closed'});
+ assert.equal(sqlite.prepare('SELECT status FROM trade_journal WHERE id=?').get('account-b-trade').status,'open');
+ await reconcileJournalFromBrokerSnapshot({environment:'practice',accountId:'account-a',openTrades:[],fills:[{id:'close',time:'2026-09-01T00:00:00Z',instrument:'EUR_USD',tradeIds:['shared-id'],pnl:10,units:-100,price:1.1,closeReason:'TP',isEntry:false,isClose:true}]});
+ assert.equal(sqlite.prepare('SELECT status FROM trade_journal WHERE id=?').get('account-b-trade').status,'open');
+});
+test('execution completion is terminal and corrupt results keep retries blocked',async()=>{
+ const {reserveExecution,finishExecution}=await vite.ssrLoadModule('/lib/execution-intents.ts');
+ const request={accountId:'terminal',environment:'practice',instrument:'EUR_USD',direction:'long',signalTime:'now',strategyVersion:'1',request:{}};
+ const first=await reserveExecution(request);
+ await finishExecution(first.id,'filled',{tradeId:'first'});
+ await finishExecution(first.id,'reconciliation_required');
+ assert.deepEqual((await reserveExecution(request)).result,{tradeId:'first'});
+ sqlite.prepare('UPDATE execution_intents SET result_json=? WHERE id=?').run('{bad',first.id);
+ assert.deepEqual(await reserveExecution(request),{id:first.id,claimed:false,result:null});
+});
+test('reconciliation resolves an uncertain intent only from broker evidence',async()=>{
+ const {reserveExecution,finishExecution}=await vite.ssrLoadModule('/lib/execution-intents.ts');
+ const {createJournalEntry,reconcileJournalFromBrokerSnapshot}=await vite.ssrLoadModule('/lib/trading-records.ts');
+ const request={accountId:'recover-account',environment:'practice',instrument:'EUR_USD',direction:'long',signalTime:'recover',strategyVersion:'1',request:{}};
+ const intent=await reserveExecution(request);await finishExecution(intent.id,'reconciliation_required');
+ const id='12345678-1234-4123-8123-123456789012',clientId=`foresight-ui-${id}`;
+ await createJournalEntry({id,environment:'practice',accountId:'recover-account',instrument:'EUR_USD',direction:'long',style:'intraday',status:'reconciliation_required',metadata:{executionIntentId:intent.id,clientId}});
+ const snapshot={environment:'practice',accountId:'recover-account',openTrades:[],fills:[]};
+ await reconcileJournalFromBrokerSnapshot(snapshot);
+ assert.equal((await reserveExecution(request)).result,null);
+ snapshot.openTrades.push({id:'broker-recovered',instrument:'EUR_USD',price:1.1,openTime:'2026-09-01T00:00:00Z',units:100,stopLoss:1,takeProfit:1.2,clientId});
+ await reconcileJournalFromBrokerSnapshot(snapshot);
+ const retry=await reserveExecution(request);assert.equal(retry.claimed,false);assert.equal(retry.result.tradeId,'broker-recovered');
+});
+test('invalid stored research JSON does not block claims or status',async()=>{
+ const {setAutomaticEnabled,claimResearch,automaticStatus}=await vite.ssrLoadModule('/lib/quant/automatic.ts');
+ await setAutomaticEnabled(true);
+ sqlite.prepare("UPDATE quant_automation_jobs SET lease_until=0,result_json='{broken',last_error=NULL").run();
+ assert.ok(await claimResearch(Date.now()));
+ const status=await automaticStatus();assert.ok(status.jobs.every(j=>j.result===null));
+});
 test('automatic research leases prevent duplicates, recover, and reject stale completions',async()=>{
+ sqlite.prepare('DELETE FROM quant_automation_jobs').run();
+ sqlite.prepare('DELETE FROM quant_automatic_history').run();
  const {claimResearch,finishResearch,setAutomaticEnabled}=await vite.ssrLoadModule('/lib/quant/automatic.ts');
  const now=1000000;
  const first=await claimResearch(now);assert.ok(first);

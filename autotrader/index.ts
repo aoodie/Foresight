@@ -240,11 +240,11 @@ class AutoTrader {
 
   private async syncJournalUpdate(row: { id?: string; brokerTradeId: string }, status: string, pnl: number | null, notes: string, details: { closeReason?: string | null; closePrice?: number | null; closeTransactionId?: string | null; closeTime?: string | null } = {}) {
     const outcomeKey = details.closeTransactionId ?? status;
-    await this.sync("journal.update", { journalId: row.id, brokerTradeId: row.brokerTradeId, status, pnl, notes, ...details }, `journal.update:${row.id ?? row.brokerTradeId}:${status}:${outcomeKey}`);
+    await this.sync("journal.update", { environment: this.config.environment, accountId: this.config.accountId, journalId: row.id, brokerTradeId: row.brokerTradeId, status, pnl, notes, ...details }, `journal.update:${row.id ?? row.brokerTradeId}:${status}:${outcomeKey}`);
   }
 
   private async syncJournalActivity(row: { id?: string; brokerTradeId: string }, notes: string | null, metadata: Record<string, unknown>) {
-    await this.sync("journal.activity", { journalId: row.id, brokerTradeId: row.brokerTradeId, status: "open", notes, metadata }, `journal.activity:${row.id ?? row.brokerTradeId}:${await hashInput(metadata)}`);
+    await this.sync("journal.activity", { environment: this.config.environment, accountId: this.config.accountId, journalId: row.id, brokerTradeId: row.brokerTradeId, status: "open", notes, metadata }, `journal.activity:${row.id ?? row.brokerTradeId}:${await hashInput(metadata)}`);
   }
 
   private closeFillFor(fills: Awaited<ReturnType<typeof fetchOandaOrderFills>>, tradeId: string) {
