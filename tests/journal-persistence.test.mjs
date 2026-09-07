@@ -59,6 +59,27 @@ test('execution completion is terminal and corrupt results keep retries blocked'
  sqlite.prepare('UPDATE execution_intents SET result_json=? WHERE id=?').run('{bad',first.id);
  assert.deepEqual(await reserveExecution(request),{id:first.id,claimed:false,result:null});
 });
+test('a broker-confirmed rejection releases the signal once; uncertain and filled intents stay blocked',async()=>{
+ const {reserveExecution,finishExecution}=await vite.ssrLoadModule('/lib/execution-intents.ts');
+ const request={accountId:'rejected',environment:'practice',instrument:'GBP_USD',direction:'short',signalTime:'2026-01-01T10:00:00Z',strategyVersion:'1.0.0',request:{units:-5000}};
+ const first=await reserveExecution(request);assert.equal(first.claimed,true);
+ await finishExecution(first.id,'rejected');
+ assert.equal(sqlite.prepare('SELECT status FROM execution_intents WHERE id=?').get(first.id).status,'rejected');
+ // The corrected retry re-claims the same intent; a concurrent duplicate does not.
+ const retry=await reserveExecution({...request,request:{units:-2500}});
+ assert.equal(retry.claimed,true);assert.equal(retry.id,first.id);
+ assert.equal((await reserveExecution(request)).claimed,false);
+ assert.equal(sqlite.prepare('SELECT request_json FROM execution_intents WHERE id=?').get(first.id).request_json,JSON.stringify({units:-2500}));
+ // A rejection can only be recorded against a live reservation.
+ await finishExecution(first.id,'reconciliation_required');
+ await finishExecution(first.id,'rejected');
+ assert.equal(sqlite.prepare('SELECT status FROM execution_intents WHERE id=?').get(first.id).status,'reconciliation_required');
+ assert.equal((await reserveExecution(request)).claimed,false);
+ const filled=await reserveExecution({...request,signalTime:'2026-01-01T11:00:00Z'});
+ await finishExecution(filled.id,'filled',{tradeId:'kept'});
+ await finishExecution(filled.id,'rejected');
+ assert.deepEqual((await reserveExecution({...request,signalTime:'2026-01-01T11:00:00Z'})).result,{tradeId:'kept'});
+});
 test('reconciliation resolves an uncertain intent only from broker evidence',async()=>{
  const {reserveExecution,finishExecution}=await vite.ssrLoadModule('/lib/execution-intents.ts');
  const {createJournalEntry,reconcileJournalFromBrokerSnapshot}=await vite.ssrLoadModule('/lib/trading-records.ts');

@@ -86,14 +86,16 @@ sudo journalctl -u foresight-autotrader -f
 
 Never commit `.env.autotrader`; it contains broker and AI credentials.
 
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
+The hosted site is built on [vinext](https://github.com/cloudflare/vinext)
+with Cloudflare D1 and Drizzle. The sections below describe that hosting
+lifecycle; the trading-specific behaviour is documented above and in `docs/`.
 
 ## Prerequisites
 
 - Node.js `>=22.13.0`
-- Linux with `flock`, `curl`, and GNU `timeout`
+- `npm run build` and `npm test` work on macOS and Linux. `npm run install:ci`
+  and `scripts/build-verified.sh` additionally require Linux with `flock`,
+  `curl`, and GNU `timeout`.
 
 ## Sites Lifecycle
 
@@ -112,7 +114,8 @@ Scripts that need writable project-scoped home, npm, XDG, and temporary paths us
 - `.openai/hosting.json` declares optional Sites D1 and R2 bindings
 - `vite.config.ts` simulates declared bindings for local development
 - `db/index.ts` reads the D1 binding from the Cloudflare Worker environment
-- `db/schema.ts` starts intentionally empty
+- `db/schema.ts` defines the journal, execution-intent, connection, research
+  and log tables; migrations live in `drizzle/`
 - `examples/d1/` contains an optional D1 example surface
 - `drizzle.config.ts` supports local migration generation when needed
 

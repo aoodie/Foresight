@@ -10,6 +10,7 @@ import {
   fetchOandaTradeDetails,
   submitOandaMarketOrder,
   closeOandaTrade,
+  isConfirmedOrderRejection,
   OandaApiError,
   type OandaEnvironment,
 } from "../lib/oanda-api.ts";
@@ -495,11 +496,15 @@ class AutoTrader {
       return { id: brokerTradeId, instrument: result.instrument, price: order.fillPrice ?? plan.entry, openTime: order.fillTime, units: direction * fixedSizing.units, unrealizedPL: 0, stopLoss: result.stopLoss, takeProfit: target, clientId, clientTag: "foresight-autotrader", clientComment: null };
     } catch (error) {
       const notes = error instanceof Error ? error.message : "Order submission failed.";
-      const outcomeUnknown = error instanceof OandaApiError && error.status === 502;
-      this.store.journalUpdateById(journalId, { status: outcomeUnknown ? "submitted" : "cancelled", notes: outcomeUnknown ? `Broker outcome unknown: ${notes}` : notes });
+      // Only a broker-confirmed rejection is safe to cancel outright. Every other
+      // failure (network, 5xx, unparseable body, or an exception raised after the
+      // fill was accepted) leaves the row `submitted` so monitorTrades() can recover
+      // the trade from its deterministic client ID instead of orphaning a live fill.
+      const rejected = isConfirmedOrderRejection(error);
+      this.store.journalUpdateById(journalId, { status: rejected ? "cancelled" : "submitted", notes: rejected ? `OANDA rejected the order: ${notes}` : `Broker outcome unknown: ${notes}`, metadata: rejected ? { brokerRejectReason: notes } : undefined });
       const row = this.store.journalRows().find((item) => item.id === journalId);
       if (row) await this.sync("journal.create", this.journalCreatePayload(row), `journal.create:${journalId}`);
-      this.log({ level: "error", event: outcomeUnknown ? "trade.open_outcome_unknown" : "trade.open_failed", message: `${result.instrument}: ${notes}`, instrument: result.instrument, details: { journalId, clientId } });
+      this.log({ level: rejected ? "warning" : "error", event: rejected ? "trade.open_rejected" : "trade.open_outcome_unknown", message: `${result.instrument}: ${notes}`, instrument: result.instrument, details: { journalId, clientId, orderOutcome: rejected ? "rejected" : "unknown" } });
       return null;
     }
   }

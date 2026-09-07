@@ -59,9 +59,14 @@ The API CSP intentionally covers API responses; it is not a full HTML script CSP
    shared between browser orders and every worker is still required. The risk
    page's recorded cash risk is not current broker exposure.
 4. Intents created before the new journal link cannot all be resolved automatically.
-   A reservation with no broker evidence stays blocked. Rejection reconciliation,
-   full broker-event ordering and crash testing across multiple worker processes
-   remain follow-up work. Do not clear uncertain reservations to force retries.
+   A reservation with no broker evidence stays blocked. A broker-confirmed
+   rejection (HTTP 4xx, or HTTP 200 with a cancel transaction and no fill) now
+   records `rejected` on the intent and `cancelled` on the journal row, and the
+   same signal may be re-reserved once with corrected parameters. Transport
+   failures, upstream 5xx and unverifiable bodies remain `unknown` and still
+   block. Full broker-event ordering and crash testing across multiple worker
+   processes remain follow-up work. Do not clear uncertain reservations to
+   force retries.
 5. Hosted provider URLs require HTTPS/public DNS names. This is not a DNS-rebinding
    defense or a destination allowlist. An operator-controlled outbound proxy would
    be needed for strict network destination enforcement.

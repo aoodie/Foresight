@@ -43,8 +43,21 @@ type OandaPricingPayload = {
   errorMessage?: string;
 };
 
+/**
+ * How much is known about a failed order request.
+ * - `rejected`: OANDA answered and confirmed that nothing was filled. Retrying is safe.
+ * - `unknown`: no trustworthy answer (network failure, timeout, upstream 5xx, unparseable
+ *   body). The order may have filled; reconcile with the broker before retrying.
+ */
+export type OandaOrderOutcome = "rejected" | "unknown";
+
 export class OandaApiError extends Error {
-  constructor(message: string, public status: number) { super(message); }
+  constructor(message: string, public status: number, public orderOutcome?: OandaOrderOutcome) { super(message); }
+}
+
+/** True only when the broker itself confirmed that the order was not filled. */
+export function isConfirmedOrderRejection(error: unknown): error is OandaApiError {
+  return error instanceof OandaApiError && error.orderOutcome === "rejected";
 }
 
 function hostFor(environment: OandaEnvironment) {
@@ -92,7 +105,7 @@ export async function submitOandaMarketOrder(args: {
       method: "POST", headers: { Authorization: `Bearer ${args.token}`, "Content-Type": "application/json" },
       body: JSON.stringify(body), cache: "no-store", signal: AbortSignal.timeout(20000), redirect: 'error',
     });
-  } catch { throw new OandaApiError("OANDA did not confirm the order outcome. Reconcile with the broker before submitting another order.", 502); }
+  } catch { throw new OandaApiError("OANDA did not confirm the order outcome. Reconcile with the broker before submitting another order.", 502, "unknown"); }
   const payload = (await response.json().catch(() => ({}))) as {
     orderFillTransaction?: {
       id?: string; time?: string; units?: string; price?: string; pl?: string; reason?: string;
@@ -102,10 +115,22 @@ export async function submitOandaMarketOrder(args: {
     };
     orderCreateTransaction?: { id?: string };
     orderCancelTransaction?: { reason?: string };
+    orderRejectTransaction?: { rejectReason?: string };
     errorMessage?: string;
   };
-  if (!response.ok) throw new OandaApiError(payload.errorMessage || `OANDA order failed (${response.status}).`, response.status);
-  if (!payload.orderFillTransaction?.id) throw new OandaApiError(payload.orderCancelTransaction?.reason || "OANDA did not confirm an order fill.", 502);
+  if (!response.ok) {
+    // A 4xx is the broker's own rejection: the order was never accepted. A 5xx
+    // gives no evidence either way, so it must be treated as an unknown outcome.
+    const rejected = response.status >= 400 && response.status < 500;
+    const reason = payload.errorMessage || payload.orderRejectTransaction?.rejectReason;
+    throw new OandaApiError(reason || `OANDA order failed (${response.status}).`, response.status, rejected ? "rejected" : "unknown");
+  }
+  if (!payload.orderFillTransaction?.id) {
+    // HTTP 200 with a cancel transaction is a confirmed non-fill (FOK not met,
+    // insufficient margin, market halted...). Any other shape is unverifiable.
+    if (payload.orderCancelTransaction?.reason) throw new OandaApiError(payload.orderCancelTransaction.reason, 422, "rejected");
+    throw new OandaApiError("OANDA did not confirm an order fill. Reconcile with the broker before submitting another order.", 502, "unknown");
+  }
   const fill = payload.orderFillTransaction;
   const fillPrice = Number(fill?.price);
   // Transaction pl already includes its reduced/closed trades. Only sum the

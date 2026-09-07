@@ -233,6 +233,50 @@ test("rejects cancelled or unconfirmed market orders even on HTTP success", asyn
   await assert.rejects(submitOandaMarketOrder({ ...brokerArgs, instrument: "EUR_USD", units: 100 }), /INSUFFICIENT_MARGIN/);
 });
 
+test("classifies a broker-confirmed non-fill separately from an unknown order outcome", async (t) => {
+  const { submitOandaMarketOrder, isConfirmedOrderRejection, OandaApiError } = await vite.ssrLoadModule("/lib/oanda-api.ts");
+  const order = { ...brokerArgs, instrument: "EUR_USD", units: 100 };
+  const outcomeOf = async () => { try { await submitOandaMarketOrder(order); } catch (error) { return error; } throw new Error("expected rejection"); };
+
+  // HTTP 200 with a cancel transaction: OANDA confirmed nothing filled.
+  t.mock.method(globalThis, "fetch", async () => Response.json({ orderCreateTransaction: { id: "1" }, orderCancelTransaction: { reason: "FOK_ORDER_NOT_FILLED" } }));
+  let error = await outcomeOf();
+  assert.ok(error instanceof OandaApiError);
+  assert.equal(error.orderOutcome, "rejected");
+  assert.equal(isConfirmedOrderRejection(error), true);
+  t.mock.restoreAll();
+
+  // HTTP 4xx: the broker refused the request before accepting it.
+  t.mock.method(globalThis, "fetch", async () => Response.json({ errorMessage: "Insufficient margin" }, { status: 400 }));
+  error = await outcomeOf();
+  assert.equal(error.orderOutcome, "rejected");
+  assert.match(error.message, /Insufficient margin/);
+  t.mock.restoreAll();
+
+  // HTTP 5xx: the broker may have processed the order; nothing is confirmed.
+  t.mock.method(globalThis, "fetch", async () => Response.json({}, { status: 503 }));
+  error = await outcomeOf();
+  assert.equal(error.orderOutcome, "unknown");
+  assert.equal(isConfirmedOrderRejection(error), false);
+  t.mock.restoreAll();
+
+  // HTTP 200 with neither a fill nor a cancel: unverifiable, must not be treated as rejected.
+  t.mock.method(globalThis, "fetch", async () => Response.json({ orderCreateTransaction: { id: "2" } }));
+  error = await outcomeOf();
+  assert.equal(error.orderOutcome, "unknown");
+  t.mock.restoreAll();
+
+  // Transport failure: no response at all.
+  t.mock.method(globalThis, "fetch", async () => { throw new TypeError("fetch failed"); });
+  error = await outcomeOf();
+  assert.equal(error.orderOutcome, "unknown");
+  assert.equal(isConfirmedOrderRejection(error), false);
+
+  // Errors from anywhere else are never a confirmed rejection.
+  assert.equal(isConfirmedOrderRejection(new Error("SQLITE_BUSY")), false);
+  assert.equal(isConfirmedOrderRejection(new OandaApiError("plain", 500)), false);
+});
+
 test("returns confirmed fills and rejects unconfirmed trade closes", async (t) => {
   const { submitOandaMarketOrder, closeOandaTrade } = await vite.ssrLoadModule("/lib/oanda-api.ts");
   t.mock.method(globalThis, "fetch", async () => Response.json({ orderFillTransaction: { id: "2", units: "100", tradeOpened: { tradeID: "3" } } }));

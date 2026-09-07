@@ -1,6 +1,6 @@
 import { reserveExecution, finishExecution } from "@/lib/execution-intents";
 import { NextResponse } from "next/server";
-import { fetchOandaAccountSummary, fetchOandaPrice, OandaApiError, submitOandaMarketOrder } from "@/lib/oanda-api";
+import { fetchOandaAccountSummary, fetchOandaPrice, isConfirmedOrderRejection, OandaApiError, submitOandaMarketOrder } from "@/lib/oanda-api";
 import { getOandaToken } from "@/lib/oanda-secret";
 import { createJournalEntry, updateJournalEntry, writeSystemLog } from "@/lib/trading-records";
 import { getEconomicEventStatus } from "@/lib/economic-calendar";
@@ -108,12 +108,17 @@ export async function POST(request: Request) {
     await finishExecution(intent.id, "filled", responseBody);
     return NextResponse.json(responseBody);
   } catch (error) {
-    try { await finishExecution(intent.id, "reconciliation_required"); } catch { /* The reservation still blocks replay if storage is unavailable. */ }
+    // Only a broker-confirmed non-fill releases the signal and cancels the journal
+    // row. Anything else (network, 5xx, post-fill bookkeeping) may have filled, so
+    // the intent stays blocked until broker reconciliation resolves it.
+    const rejected = !orderSubmitted && isConfirmedOrderRejection(error);
+    const message = error instanceof Error ? error.message : "Order submission failed.";
+    try { await finishExecution(intent.id, rejected ? "rejected" : "reconciliation_required"); } catch { /* The reservation still blocks replay if storage is unavailable. */ }
     if (journalId && !orderSubmitted) {
-      try { await updateJournalEntry({ id: journalId, status: "reconciliation_required", notes: error instanceof Error ? error.message : "Order submission failed." }); } catch { /* Preserve the original order error. */ }
+      try { await updateJournalEntry({ id: journalId, status: rejected ? "cancelled" : "reconciliation_required", notes: rejected ? `OANDA rejected the order: ${message}` : message, metadata: rejected ? { brokerRejectReason: message } : undefined }); } catch { /* Preserve the original order error. */ }
     }
-    try { await writeSystemLog({ level: "error", category: "execution", event: "order.failed", message: error instanceof Error ? error.message : "Order submission failed.", instrument: body.instrument, environment: connection.environment, correlationId }); } catch { /* Preserve the original order error. */ }
+    try { await writeSystemLog({ level: rejected ? "warning" : "error", category: "execution", event: rejected ? "order.rejected" : "order.failed", message, instrument: body.instrument, environment: connection.environment, correlationId, details: { journalId, orderOutcome: rejected ? "rejected" : "unknown" } }); } catch { /* Preserve the original order error. */ }
     const status = error instanceof OandaApiError ? error.status : 500;
-    return NextResponse.json({ error: error instanceof Error ? error.message : "Unable to submit order." }, { status });
+    return NextResponse.json({ error: rejected ? `OANDA rejected the order: ${message}` : message, orderOutcome: rejected ? "rejected" : "unknown" }, { status });
   }
 }
