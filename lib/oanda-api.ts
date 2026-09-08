@@ -55,7 +55,7 @@ function hostFor(environment: OandaEnvironment) {
 async function oandaJson<T>(url: string, token: string): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store", signal: AbortSignal.timeout(20000), redirect: 'error' });
+    response = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store", signal: AbortSignal.timeout(20000), redirect: 'manual' });
   } catch {
     throw new OandaApiError("OANDA could not be reached. Try again shortly.", 502);
   }
@@ -91,7 +91,7 @@ export async function submitOandaMarketOrder(args: {
   try {
     response = await fetch(`https://${host}/v3/accounts/${encodeURIComponent(args.accountId)}/orders`, {
       method: "POST", headers: { Authorization: `Bearer ${args.token}`, "Content-Type": "application/json" },
-      body: JSON.stringify(body), cache: "no-store", signal: AbortSignal.timeout(20000), redirect: 'error',
+      body: JSON.stringify(body), cache: "no-store", signal: AbortSignal.timeout(20000), redirect: 'manual',
     });
   } catch { throw new OandaApiError("OANDA did not confirm the order outcome. Reconcile with the broker before submitting another order.", 502); }
   const payload = (await response.json().catch(() => ({}))) as {
@@ -135,7 +135,7 @@ export async function closeOandaTrade(args: { token: string; environment: OandaE
       method: "PUT",
       headers: { Authorization: `Bearer ${args.token}`, "Content-Type": "application/json" },
       body: JSON.stringify({ units: "ALL" }),
-      cache: "no-store", signal: AbortSignal.timeout(20000), redirect: 'error',
+      cache: "no-store", signal: AbortSignal.timeout(20000), redirect: 'manual',
     });
   } catch { throw new OandaApiError("OANDA did not confirm the close outcome. Refresh broker positions before trying again.", 502); }
   const payload = (await response.json().catch(() => ({}))) as { orderFillTransaction?: { id?: string; time?: string; pl?: string; price?: string; reason?: string }; errorMessage?: string };

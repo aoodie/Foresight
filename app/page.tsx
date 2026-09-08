@@ -2633,8 +2633,7 @@ export default function Home() {
           </>
         )}
         <p className="mt-6 text-xs leading-5 text-[#71887f]">
-          For research and education only. This interface does not execute
-          trades or provide investment advice.
+          For research and education only. Broker actions can place or close trades when confirmed. Research results do not guarantee future performance.
         </p>
       </div>
     </main>

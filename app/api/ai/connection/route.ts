@@ -28,7 +28,7 @@ export async function POST(request: Request) {
   }
   if (existing && baseUrl !== existing.baseUrl && !body.apiKey?.trim()) return NextResponse.json({ error: 'Enter a new API key when changing the provider address.' }, { status: 400 });
   let check: Response;
-  try { check = await fetch(aiEndpoint(baseUrl, "/models"), { headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(15000), redirect: 'error' }); }
+  try { check = await fetch(aiEndpoint(baseUrl, "/models"), { headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(15000), redirect: 'manual' }); }
   catch { return NextResponse.json({ error: 'The model provider could not be reached securely.' }, { status: 502 }); }
   if (!check.ok) {
     return NextResponse.json({ connected: false, error: 'The LLM provider rejected this API key or base URL.' }, { status: 502 });

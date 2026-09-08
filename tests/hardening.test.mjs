@@ -53,7 +53,7 @@ test('broker fills count transaction P&L once and order requests have deadlines'
  const {submitOandaMarketOrder,normaliseOandaPrice}=await vite.ssrLoadModule('/lib/oanda-api.ts');
  const original=globalThis.fetch;
  try {
-  globalThis.fetch=async(_url,init)=>{assert.ok(init.signal);assert.equal(init.redirect,'error');return Response.json({orderFillTransaction:{id:'1',pl:'25',tradesClosed:[{tradeID:'2',realizedPL:'25'}]}});};
+  globalThis.fetch=async(_url,init)=>{assert.ok(init.signal);assert.equal(init.redirect,'manual');return Response.json({orderFillTransaction:{id:'1',pl:'25',tradesClosed:[{tradeID:'2',realizedPL:'25'}]}});};
   const fill=await submitOandaMarketOrder({token:'fake',environment:'practice',accountId:'a',instrument:'EUR_USD',units:100});
   assert.equal(fill.realisedPnl,25);
   assert.throws(()=>normaliseOandaPrice({prices:[{time:'2026-09-01T00:00:00Z',bids:[{price:'2'}],asks:[{price:'1'}]}]},'EUR_USD'),/usable live quote/);

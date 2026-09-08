@@ -23,7 +23,7 @@ export async function llmFetch(url: string, init: RequestInit, protocol: LlmProt
   body={model:original.model,max_tokens:original.max_output_tokens??4096,system:(original.instructions??'')+(format?`\nReturn only a JSON object matching this schema: ${JSON.stringify(format.schema)}`:''),messages:[{role:'user',content:original.input??''}]};
  }
  let response:Response;
- try { response=await fetch(target,{...init,headers,body:JSON.stringify(body),signal:init.signal?AbortSignal.any([init.signal,AbortSignal.timeout(60000)]):AbortSignal.timeout(60000),redirect:'error'}); }
+ try { response=await fetch(target,{...init,headers,body:JSON.stringify(body),signal:init.signal?AbortSignal.any([init.signal,AbortSignal.timeout(60000)]):AbortSignal.timeout(60000),redirect:'manual'}); }
  catch { throw new Error('The model provider timed out or could not be reached. Your trading rules have not changed.'); }
  if(!response.ok) { await response.body?.cancel(); return Response.json({error:{message:`The model provider rejected the request (${response.status}). Check its connection and model settings.`}},{status:response.status}); }
  const bytes=await boundedBody(response,1024*1024);

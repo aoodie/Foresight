@@ -20,7 +20,7 @@ async function callLuxAlgo<T>(
   const response = await fetch(ENDPOINT, {
     method: "POST",
     signal: AbortSignal.timeout(15000),
-    redirect: 'error',
+    redirect: 'manual',
     headers: {
       "Content-Type": "application/json",
       Accept: "application/json, text/event-stream",

@@ -53,6 +53,12 @@ requested instrument before using its conversion factors.
   absence of undisclosed vulnerabilities. The pinned esbuild override was checked
   with a clean dependency installation and migration generation.
 
+Production follow-up: the edge runtime rejects `redirect: error` before sending
+a request. All protected transports use `redirect: manual` and reject non-success
+responses, including redirects. This preserves credential protection while allowing
+normal broker/model requests. Owner sign-in and journal reads were verified in
+production, including exact units for historical JPY entries.
+
 ## Remaining work and limits
 
 1. Research remains idea-screening quality. Midpoint bars and fixed estimated
