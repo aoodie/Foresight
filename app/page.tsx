@@ -1,4 +1,5 @@
 "use client";
+import { riskSizedOrderPreview, formatPositionSize } from '@/lib/trade-risk';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
@@ -52,6 +53,7 @@ type MarketData = {
   environment: "practice" | "live";
 };
 type Quote = {
+  instrument: string;
   bid: number;
   ask: number;
   mid: number;
@@ -375,6 +377,12 @@ export default function Home() {
   const [message, setMessage] = useState("");
   const [data, setData] = useState<MarketData | null>(null);
   const [quote, setQuote] = useState<Quote | null>(null);
+  const [sizingTime, setSizingTime] = useState(0);
+  useEffect(() => {
+    const first = window.setTimeout(() => setSizingTime(Date.now()), 0);
+    const timer = window.setInterval(() => setSizingTime(Date.now()), 5000);
+    return () => { window.clearTimeout(first); window.clearInterval(timer); };
+  }, []);
   const candleSequence = useRef(0);
   const quoteSequence = useRef(0);
   const selectedPairRef = useRef(instrument);
@@ -605,7 +613,7 @@ export default function Home() {
               payload.message ||
               "Unable to load OANDA live pricing.",
           );
-        if (requestId !== quoteSequence.current) return;
+        if (requestId !== quoteSequence.current || payload.instrument !== selectedPairRef.current) return;
         setQuote(payload);
         setEnvironment(payload.environment);
         setConnection("connected");
@@ -889,10 +897,9 @@ export default function Home() {
   const riskAmount = account && validRiskPercent ? account.equity * parsedRiskPercent / 100 : null;
   const conversion = quote?.homeConversionFactors?.negativeUnits ?? null;
   const cashRiskPerUnit = stopDistance !== null && conversion !== null ? stopDistance * conversion : null;
-  const calculatedUnits = riskAmount !== null && cashRiskPerUnit !== null && cashRiskPerUnit > 0
-    ? Math.min(1_000_000, Math.max(0, Math.floor(riskAmount / cashRiskPerUnit)))
-    : 0;
-  const calculatedLots = marketSetup?.assetClass === "forex" ? calculatedUnits / 100000 : null;
+  const sizePreview = riskSizedOrderPreview({instrument,direction,equity:account?.equity ?? NaN,riskPercent:parsedRiskPercent,stop:planStop,target:planTp1,quote,now:sizingTime});
+  const calculatedUnits = sizePreview?.units ?? 0;
+  const calculatedLots = sizePreview?.lots ?? null;
   const slPips = stopDistance === null ? null : stopDistance * pipMultiplier(instrument);
   const tp1Pips = tp1Distance === null ? null : tp1Distance * pipMultiplier(instrument);
   const tp2Pips = tp2Distance === null ? null : tp2Distance * pipMultiplier(instrument);
@@ -2314,7 +2321,7 @@ export default function Home() {
                           <PlanLevel label="Account equity" value={account ? `${account.currency} ${account.equity.toFixed(2)}` : "Loading…"} />
                           <PlanLevel label="Risk amount" value={riskAmount !== null ? `${account?.currency ?? ""} ${riskAmount.toFixed(2)}` : "—"} />
                           <PlanLevel label="Calculated size" value={calculatedUnits ? `${calculatedUnits.toLocaleString()} units` : "—"} />
-                          <PlanLevel label="Lots" value={calculatedLots !== null ? calculatedLots.toFixed(2) : marketSetup?.assetClass ? "N/A for CFD" : "—"} />
+                          <PlanLevel label="Exact position size" value={formatPositionSize(instrument, sizePreview?.units)} />
                           <PlanLevel label="SL distance" value={slPips !== null ? `${slPips.toFixed(instrument.endsWith("_JPY") ? 1 : 1)} ${marketSetup?.assetClass === "forex" ? "pips" : "points"}` : "—"} tone="risk" />
                           <PlanLevel label="TP1 distance" value={tp1Pips !== null ? `${tp1Pips.toFixed(1)} ${marketSetup?.assetClass === "forex" ? "pips" : "points"}` : "—"} tone="reward" />
                           <PlanLevel label="TP2 distance" value={tp2Pips !== null ? `${tp2Pips.toFixed(1)} ${marketSetup?.assetClass === "forex" ? "pips" : "points"}` : "—"} tone="reward" />
@@ -2326,6 +2333,7 @@ export default function Home() {
                         </div>
                         <p className="mt-2 text-[11px] leading-4 text-[#71887f]">
                           Position size is calculated from account equity, your risk percentage, the selected strategy’s stop distance and OANDA’s home-currency conversion rate. No fixed unit size is used.
+                          {instrument.endsWith('_JPY') && ' For yen pairs, 1 pip is 0.01 JPY and 1 standard lot is 100,000 units of the first currency. Yen losses are converted into your account currency before sizing.'}
                         </p>
                           {executionMode === "live" && (
                           <label className="mt-3 flex items-start gap-2 text-xs text-amber-100/80">

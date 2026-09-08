@@ -33,6 +33,14 @@ The API CSP intentionally covers API responses; it is not a full HTML script CSP
 
 ## Validation
 
+JPY follow-up: the order preview now shares the risk-sizing function used by
+server execution; requires a fresh quote for the selected instrument; and shows
+up to five decimals of standard lots with exact broker units. Journal and position
+views use units as the display source instead of rounding small lots to zero.
+Regression tests compare USD/JPY, EUR/JPY and GBP/JPY in both directions under
+USD, GBP and JPY account-conversion examples. Broker quote selection matches the
+requested instrument before using its conversion factors.
+
 - Regression cases cover owner/cross-site rejection, body size, journal inputs,
   account collisions, immutable execution outcomes, broker evidence recovery,
   corrupt job data, cache validity, CSV timezones, P&L accounting and model failures.

@@ -101,8 +101,31 @@ export function positionRiskAmount(input: {
 }
 
 export function standardLots(instrument: string, units: number) {
+  if (!Number.isFinite(units)) return null;
   if (instrument.startsWith("XAU_") || instrument.startsWith("US30_")) return null;
   return Math.abs(units) / 100_000;
+}
+
+export function formatPositionSize(instrument: string, units: number | null | undefined) {
+  if (units == null || !Number.isFinite(units)) return '—';
+  const lots = standardLots(instrument, units);
+  const amount = Math.abs(units).toLocaleString('en-GB', { maximumFractionDigits: 5 });
+  return lots === null ? `${amount} units` : `${lots.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 5 })} lots · ${amount} units`;
+}
+
+export function riskSizedOrderPreview(input: {
+  instrument: string; direction: 'long' | 'short' | null; equity: number; riskPercent: number;
+  stop: number | null; target: number | null; now: number;
+  quote: {instrument: string; time: string; bid: number; ask: number; tradeable: boolean; homeConversionFactors?: {negativeUnits: number;positiveUnits: number}} | null;
+}) {
+  const q = input.quote, age = q ? input.now - Date.parse(q.time) : NaN;
+  if (!q || q.instrument !== input.instrument || !q.tradeable || !Number.isFinite(age) || age < -5000 || age > 60000 || !input.direction) return null;
+  const entry = input.direction === 'long' ? q.ask : q.bid;
+  const check = validateProtectedOrder({instrument:input.instrument,units:input.direction === 'long' ? 1 : -1,entry,stopLoss:input.stop,takeProfit:input.target});
+  if (!check.ok) return null;
+  const sized = calculateRiskSizedUnits({equity:input.equity,riskPercent:input.riskPercent,stopDistance:check.stopDistance,lossConversionFactor:q.homeConversionFactors?.negativeUnits ?? NaN});
+  if (!sized) return null;
+  return {...sized,entry,lots:standardLots(input.instrument,sized.units),stopPips:check.stopDistance / pipSize(input.instrument),actualRisk:sized.units * sized.cashRiskPerUnit};
 }
 
 export function positionSizeLockPeriod(scope: SizeLockScope, now = new Date()) {

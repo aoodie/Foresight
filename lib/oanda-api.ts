@@ -30,6 +30,7 @@ type OandaAccountSummaryPayload = {
 };
 type OandaPricingPayload = {
   prices?: Array<{
+    instrument?: string;
     time?: string;
     tradeable?: boolean;
     status?: string;
@@ -151,7 +152,7 @@ export async function fetchOandaAccountId(token: string, environment: OandaEnvir
 }
 
 export function normaliseOandaPrice(payload: OandaPricingPayload, instrument?: string) {
-  const quote = payload.prices?.[0];
+  const quote = instrument ? payload.prices?.find(p => p.instrument === instrument) ?? (payload.prices?.length === 1 && !payload.prices[0].instrument ? payload.prices[0] : undefined) : payload.prices?.[0];
   const bid = Number(quote?.bids?.[0]?.price ?? quote?.closeoutBid);
   const ask = Number(quote?.asks?.[0]?.price ?? quote?.closeoutAsk);
   if (!quote?.time || !Number.isFinite(bid) || !Number.isFinite(ask) || bid <= 0 || ask < bid) throw new OandaApiError("OANDA returned no usable live quote.", 502);

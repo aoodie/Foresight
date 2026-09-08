@@ -52,6 +52,28 @@ test("calculates USDJPY cash risk using the broker loss conversion factor", asyn
   assert.equal(standardLots("USD_JPY", 100_000), 1);
   assert.equal(standardLots("XAU_USD", 100), null);
 });
+test('JPY previews agree with broker-unit sizing across account currencies and directions',async()=>{
+ const {riskSizedOrderPreview,calculateRiskSizedUnits,formatPositionSize}=await vite.ssrLoadModule('/lib/trade-risk.ts');
+ const time='2026-09-07T10:00:00Z',now=Date.parse(time);
+ for(const instrument of ['USD_JPY','EUR_JPY','GBP_JPY']) for(const conversion of [1/150,1/195,1]) for(const direction of ['long','short']) {
+  const entry=150,stop=direction==='long'?149.5:150.5,target=direction==='long'?151:149;
+  const quote={instrument,time,bid:entry,ask:entry,tradeable:true,homeConversionFactors:{negativeUnits:conversion,positiveUnits:conversion}};
+  const preview=riskSizedOrderPreview({instrument,direction,equity:10000,riskPercent:0.5,stop,target,quote,now});
+  const backend=calculateRiskSizedUnits({equity:10000,riskPercent:0.5,stopDistance:.5,lossConversionFactor:conversion});
+  assert.equal(preview.units,backend.units);assert.equal(preview.lots,backend.units/100000);assert.equal(preview.stopPips,50);assert.ok(preview.actualRisk<=50);
+  assert.equal(riskSizedOrderPreview({instrument,direction,equity:10000,riskPercent:.5,stop,target,quote:{...quote,instrument:'EUR_USD'},now}),null);
+  assert.equal(riskSizedOrderPreview({instrument,direction,equity:10000,riskPercent:.5,stop,target,quote,now:now+61000}),null);
+ }
+ assert.equal(formatPositionSize('USD_JPY',123),'0.00123 lots · 123 units');
+ assert.equal(formatPositionSize('EUR_JPY',-125000),'1.25 lots · 125,000 units');
+});
+test('JPY pricing uses its matching quote and JPY home conversion',async()=>{
+ const {normaliseOandaPrice}=await vite.ssrLoadModule('/lib/oanda-api.ts');
+ const quote=(instrument,bid,ask)=>({instrument,time:'2026-09-07T10:00:00Z',tradeable:true,bids:[{price:String(bid)}],asks:[{price:String(ask)}]});
+ const payload={prices:[quote('EUR_USD',1.1,1.1001),quote('USD_JPY',150,150.01)],homeConversions:[{currency:'USD',accountGain:'0.8',accountLoss:'0.81'},{currency:'JPY',accountGain:'0.005',accountLoss:'0.0051'}]};
+ const price=normaliseOandaPrice(payload,'USD_JPY');assert.equal(price.bid,150);assert.equal(price.homeConversionFactors.negativeUnits,.0051);
+ assert.throws(()=>normaliseOandaPrice(payload,'EUR_JPY'),/usable live quote/);
+});
 
 test("keeps a daily or weekly size fixed and blocks it when current risk is too high", async () => {
   const { positionSizeLockPeriod, resolveLockedPositionSize } = await vite.ssrLoadModule("/lib/trade-risk.ts");
